@@ -4,6 +4,7 @@ import shutil
 from mathutils import Vector
 import tempfile
 from datetime import datetime
+from mathutils import kdtree
 
 def print_header(title):
     print(f"\n-- {datetime.now().strftime('%H:%M:%S')} :: {title} --\n")
@@ -128,6 +129,7 @@ def create_blank_image(name, width, height):
 
 def unwrap_and_bake_selected(obj, master_folder):
     print_header("STARTING BAKE PROCESS")
+    log_progress(f"Baking object: {obj.name}")
     original_obj = obj
     
     if original_obj is None or original_obj.type != 'MESH':
@@ -165,28 +167,32 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.ops.mesh.mark_seam(clear=True)  # Clear existing seams
     bpy.ops.mesh.mark_sharp(clear=True)  # Clear existing sharp edges
     
+    log_progress("Starting UV unwrap...", 1)
     try:
         bpy.ops.uv.smart_project(
-            angle_limit=45.0,
-            island_margin=0.03,
-            area_weight=0.7,
+            angle_limit=89.0,  # More aggressive angle to prevent stretching
+            island_margin=0.001,  # Tighter packing
+            area_weight=1.0,  # Maximum weight to prevent distortion
             correct_aspect=True,
             scale_to_bounds=True
         )
+        log_progress("UV unwrap completed successfully", 1)
     except RuntimeError as e:
-        log_progress(f"UV unwrapping failed: {str(e)}")
+        log_progress(f"UV unwrapping failed: {str(e)}", 1)
         # Try basic unwrap as fallback
         try:
-            bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.03)
+            log_progress("Trying fallback unwrap method...", 1)
+            bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.001)  # Changed to ANGLE_BASED for better accuracy
+            log_progress("Fallback unwrap successful", 1)
         except:
-            log_progress("Both UV unwrapping methods failed!")
+            log_progress("Both UV unwrapping methods failed!", 1)
             return
     
     bpy.ops.object.mode_set(mode='OBJECT')
 
     def create_black_image(name, width, height):
         img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-        # Create a list of black pixels with alpha
+        # Create a list of black pixels with alpha - adjust for actual image size
         pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
         # Convert to float array and assign
         img.pixels.foreach_set(pixels)
@@ -194,14 +200,14 @@ def unwrap_and_bake_selected(obj, master_folder):
 
     bake_image_main = create_black_image(
         name=f"{original_obj.name}_bake_main",
-        width=1024,  # Increased from 2048 for better quality
-        height=1024
+        width=2048,  # Increased resolution
+        height=2048
     )
     
     bake_image_preserved = create_black_image(
         name=f"{original_obj.name}_bake_preserved",
-        width=1024,  # Increased from 512 for better quality
-        height=1024
+        width=2048,  # Increased resolution
+        height=2048
     )
 
     has_transparency = False
@@ -280,27 +286,28 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.context.scene.cycles.preview_denoising = True
     
     bpy.context.scene.render.engine = 'CYCLES'
-    bpy.context.scene.cycles.samples = 512  # Increased from 256
-    bpy.context.scene.cycles.bake_type = 'DIFFUSE'
+    bpy.context.scene.cycles.samples = 2048  # Increased samples
+    bpy.context.scene.cycles.diffuse_bounces = 4
+    bpy.context.scene.render.bake.margin = 16  # Reduced margin to prevent bleeding
     bpy.context.scene.render.bake.use_pass_direct = True
     bpy.context.scene.render.bake.use_pass_indirect = True
-    bpy.context.scene.render.bake.margin = 32  # Increased from 16
     bpy.context.scene.render.bake.use_selected_to_active = False
     bpy.context.scene.render.bake.use_clear = True
     bpy.context.scene.render.bake.target = 'IMAGE_TEXTURES'
     
     # Add cage settings for better projection
     bpy.context.scene.render.bake.use_cage = True
-    bpy.context.scene.render.bake.cage_extrusion = 0.05  # Reduced from 0.1 for more precision
+    bpy.context.scene.render.bake.cage_extrusion = 0.02  # Reduced from 0.05 for more precision
     
-    # Add anti-aliasing settings
-    bpy.context.scene.cycles.use_adaptive_sampling = True
-    bpy.context.scene.cycles.adaptive_threshold = 0.01
-    bpy.context.scene.cycles.denoiser = 'OPENIMAGEDENOISE'
+    # Improved anti-aliasing settings
+    bpy.context.scene.cycles.use_adaptive_sampling = False  # Disable adaptive sampling for consistent quality
+    bpy.context.scene.cycles.use_denoising = False  # Disable denoising to preserve details
     
     # Add padding between UV islands
     bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.uv.pack_islands(margin=0.05)  # Increased UV island margin
+    bpy.ops.uv.pack_islands(margin=0.02, rotate=False)  # Reduced margin, disabled rotation
+    bpy.ops.uv.pin(clear=True)  # Clear any pinned UVs
+    bpy.ops.uv.average_islands_scale()  # Normalize island scales
     bpy.ops.object.mode_set(mode='OBJECT')
     
     if has_transparency:
@@ -325,30 +332,36 @@ def unwrap_and_bake_selected(obj, master_folder):
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         return os.path.join(desktop, filename)
     
+    log_progress("Setting up bake parameters...", 1)
     print_subheader("BAKING TEXTURES")
     if preserve_faces:
-        log_progress("Baking preserved UV areas...", 1)
-        # Initialize black pixels for preserved image
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Updated size
+        log_progress("Starting preserved UV bake...", 1)
+        # Initialize black pixels for preserved image - match the actual image size
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (2048 * 2048)  # Updated size
         bake_image_preserved.pixels.foreach_set(black_pixels)
         for poly in original_obj.data.polygons:
             poly.select = poly.index in preserve_faces
+        log_progress("Beginning preserved bake operation...", 2)
         bpy.ops.object.bake(type='DIFFUSE')
+        log_progress("Preserved bake completed", 2)
 
-    log_progress("Baking main texture...", 1)
-    # Initialize black pixels for main image
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Updated size
+    log_progress("Starting main texture bake...", 1)
+    # Initialize black pixels for main image - match the actual image size
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (2048 * 2048)  # Updated size
     bake_image_main.pixels.foreach_set(black_pixels)
     for poly in original_obj.data.polygons:
         poly.select = poly.index not in preserve_faces
+    log_progress("Beginning main bake operation...", 2)
     bpy.ops.object.bake(type='DIFFUSE')
+    log_progress("Main bake completed", 2)
     
     main_path = os.path.join(export_folder, f"{original_obj.name}_bake_main.png")
     try:
+        log_progress("Saving main texture...", 1)
         bake_image_main.save_render(filepath=main_path)
-        print(f"Main texture saved to: {main_path}")
+        log_progress(f"Main texture saved to: {main_path}", 1)
     except Exception as e:
-        print(f"Error saving main texture: {e}")
+        log_progress(f"Error saving main texture: {e}", 1)
 
     xmodel_path = os.path.join(export_folder, f"{original_obj.name}_baked.XMODEL_BIN")
     try:
@@ -467,13 +480,80 @@ def verify_and_split_if_needed(obj):
     
     return False
 
+def store_original_data(obj):
+    """Store original mesh data including materials and vertex-material associations"""
+    original_data = {
+        'materials': list(obj.material_slots),
+        'mesh': obj.data.copy(),
+        'vert_dominant_mat': {}
+    }
+
+    # Build vertex to dominant material index mapping
+    vert_mat_counts = {}
+    for poly in obj.data.polygons:
+        mat_index = poly.material_index
+        for vert_idx in poly.vertices:
+            if vert_idx not in vert_mat_counts:
+                vert_mat_counts[vert_idx] = {}
+            vert_mat_counts[vert_idx][mat_index] = vert_mat_counts[vert_idx].get(mat_index, 0) + 1
+
+    for vert_idx, counts in vert_mat_counts.items():
+        original_data['vert_dominant_mat'][vert_idx] = max(counts, key=counts.get) if counts else 0
+
+    return original_data
+
+def transfer_original_data(new_obj, original_data):
+    """Transfer materials from original to new mesh using optimized spatial lookups"""
+    log_progress("Transferring materials (optimized)...", 1)
+    
+    # Build KDTree from original vertices
+    original_mesh = original_data['mesh']
+    kd = kdtree.KDTree(len(original_mesh.vertices))
+    for i, vert in enumerate(original_mesh.vertices):
+        kd.insert(vert.co, i)
+    kd.balance()
+
+    # Create vertex material mapping with spatial lookup
+    vert_mat_mapping = {}
+    for new_idx, vert in enumerate(new_obj.data.vertices):
+        try:
+            nearest, orig_idx, dist = kd.find(vert.co)
+            if dist < 0.001:  # 1mm threshold
+                vert_mat_mapping[new_idx] = original_data['vert_dominant_mat'].get(orig_idx, 0)
+        except:
+            continue
+
+    # Transfer materials with bulk operations
+    mat_list = [mat.material for mat in original_data['materials'] if mat.material]
+    new_obj.data.materials.clear()
+    for mat in mat_list:
+        new_obj.data.materials.append(mat)
+
+    # Batch update polygon material indices
+    mat_array = []
+    for poly in new_obj.data.polygons:
+        counts = {}
+        for vert_idx in poly.vertices:
+            if vert_idx in vert_mat_mapping:
+                mat_idx = vert_mat_mapping[vert_idx]
+                counts[mat_idx] = counts.get(mat_idx, 0) + 1
+        mat_array.append(max(counts, key=counts.get) if counts else 0)
+
+    # Single-pass material assignment
+    for i, poly in enumerate(new_obj.data.polygons):
+        poly.material_index = mat_array[i] if i < len(mat_array) else 0
+
 def split_by_material_vertices(obj):
-    print_header("STARTING MATERIAL SPLIT")
-    MAX_VERTICES = 12000  # Match the new MAX_SAFE_VERTICES
+    print_header("STARTING MATERIAL SPLIT (OPTIMIZED)")
+    MAX_VERTICES = 12000
     
     if not obj or obj.type != 'MESH':
         log_progress("Error: Please select a mesh object")
         return None, None
+
+    # Store original data before modifications
+    log_progress("Storing original mesh data...")
+    original_data = store_original_data(obj)
 
     # Apply transformations and clean mesh
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
@@ -528,7 +608,6 @@ def split_by_material_vertices(obj):
 
     print_subheader("PROCESSING VERTEX GROUPS")
     for i, vertices in enumerate(vertex_groups):
-        log_progress(f"Processing group {i + 1}/{len(vertex_groups)}", 1)
         group = obj.vertex_groups.new(name=f"Split_{i+1}")
         for vert_idx in vertices:
             group.add([vert_idx], 1.0, 'REPLACE')
@@ -555,17 +634,60 @@ def split_by_material_vertices(obj):
 
     print("Split operation completed")
     
-    # Verify and potentially split large objects further
-    final_objects = []
-    for new_obj in new_objects:
-        if verify_and_split_if_needed(new_obj):
-            # If object was split, add all visible objects that aren't the original
-            final_objects.extend([o for o in bpy.context.visible_objects 
-                               if o.type == 'MESH' and o not in new_objects])
-        else:
-            final_objects.append(new_obj)
+    # Create master folder once for all chunks
+    master_folder_name = f"{obj_name}_baked"
+    master_folder = create_master_export_folder(master_folder_name)
     
-    return obj_name, final_objects
+    if not master_folder:
+        print("Could not create master export folder!")
+        return None, None
+
+    # Process each chunk completely before moving to next
+    processed_objects = []
+    total_chunks = len(new_objects)
+    print_subheader(f"PROCESSING {total_chunks} CHUNKS")
+    
+    for i, new_obj in enumerate(new_objects, 1):
+        print_header(f"PROCESSING CHUNK {i}/{total_chunks}: {new_obj.name}")
+        
+        # Transfer materials first
+        log_progress("Transferring materials...", 1)
+        transfer_original_data(new_obj, original_data)
+        
+        # Clear any existing bake images
+        log_progress("Clearing previous bake data...", 1)
+        for img in list(bpy.data.images):
+            if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
+                img.user_clear()
+                bpy.data.images.remove(img, do_unlink=True)
+        
+        # Bake this chunk immediately
+        log_progress("Starting bake process...", 1)
+        bpy.context.view_layer.objects.active = new_obj
+        unwrap_and_bake_selected(new_obj, master_folder)
+        
+        # Cleanup after successful bake
+        log_progress("Cleaning up...", 1)
+        clear_bake_image_references(new_obj)
+        for img in list(bpy.data.images):
+            if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
+                img.user_clear()
+                bpy.data.images.remove(img, do_unlink=True)
+        
+        # Add to processed list
+        processed_objects.append(new_obj)
+        
+        # Force updates
+        bpy.context.view_layer.update()
+        print_subheader(f"CHUNK {i}/{total_chunks} COMPLETED")
+        
+    
+    # Clean up original data
+    if 'mesh' in original_data:
+        bpy.data.meshes.remove(original_data['mesh'], do_unlink=True)
+    original_data.clear()
+    
+    return obj_name, processed_objects
 
 def clear_bake_image_references(obj):
     for mat_slot in obj.material_slots:
@@ -601,44 +723,16 @@ def split_and_bake():
         print("No object selected or object is not a mesh.")
         return
     
-    master_folder_name = f"{obj_name}_baked"
-    master_folder = create_master_export_folder(master_folder_name)
-    
-    if not master_folder:
-        print("Could not create master export folder!")
-        return
-    
-    print_subheader("PROCESSING OBJECTS")
+    # Remove secondary baking since chunks were already baked
     if new_objects:
-        total_objects = len(new_objects)
-        for i, new_obj in enumerate(new_objects, 1):
-            log_progress(f"Baking object {i} of {total_objects}...", 1)
-            
-            for img in list(bpy.data.images):
-                if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
-                    img.user_clear()
-                    bpy.data.images.remove(img, do_unlink=True)
-            
-            bpy.context.view_layer.update()
-            
-            bpy.context.view_layer.objects.active = new_obj
-            unwrap_and_bake_selected(new_obj, master_folder)
-            
-            clear_bake_image_references(new_obj)
-            for img in list(bpy.data.images):
-                if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
-                    img.user_clear()
-                    bpy.data.images.remove(img, do_unlink=True)
-            
+        # Just clean up the objects
+        for new_obj in new_objects:
             mesh_data = new_obj.data
             bpy.data.objects.remove(new_obj, do_unlink=True)
             bpy.data.meshes.remove(mesh_data, do_unlink=True)
             
-            bpy.context.view_layer.update()
-    else:
-        print("No objects were created during the split operation.")
+        bpy.context.view_layer.update()
     
-    # Add new code to handle remaining mesh objects
     print()
     print("Checking for remaining mesh objects...")
     remaining_meshes = [obj for obj in bpy.context.scene.objects 
