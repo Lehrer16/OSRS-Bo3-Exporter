@@ -3,6 +3,18 @@ import os
 import shutil
 from mathutils import Vector
 import tempfile
+from datetime import datetime
+
+def print_header(title):
+    print(f"\n-- {datetime.now().strftime('%H:%M:%S')} :: {title} --\n")
+
+def print_subheader(title):
+    print(f"\n~~ {title} ~~\n")
+
+def log_progress(message, indent=0):
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    indent_str = "  " * indent
+    print(f"[{timestamp}] {indent_str}{message}")
 
 def material_has_transparency(material):
     if not material or not material.use_nodes:
@@ -53,6 +65,33 @@ def create_export_folder(master_folder, obj_name):
     return export_folder
 
 def export_to_xmodel(filepath, obj):
+    # Final verification before export
+    vert_count = len(obj.data.vertices)
+    if vert_count > 65534:
+        print(f"EMERGENCY: {obj.name} has {vert_count} vertices - performing last-minute split")
+        verify_and_split_if_needed(obj)
+        return False
+    
+    # Pre-export cleanup
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    
+    # Apply all modifiers
+    for mod in obj.modifiers:
+        try:
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+        except:
+            print(f"Couldn't apply {mod.name}, removing instead")
+            obj.modifiers.remove(mod)
+    
+    # Force triangulation
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.quads_convert_to_tris()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
     export_dir = os.path.dirname(filepath)
     os.makedirs(export_dir, exist_ok=True)
     
@@ -88,17 +127,18 @@ def create_blank_image(name, width, height):
     return img
 
 def unwrap_and_bake_selected(obj, master_folder):
+    print_header("STARTING BAKE PROCESS")
     original_obj = obj
     
     if original_obj is None or original_obj.type != 'MESH':
-        print("Please select a mesh object")
+        log_progress("Error: Please select a mesh object")
         return
 
     export_folder = create_export_folder(master_folder, original_obj.name)
     if not export_folder:
-        print("Could not create export folder!")
+        log_progress("Error: Could not create export folder!")
         return
-    print(f"Created export folder: {export_folder}")
+    log_progress(f"Created export folder: {export_folder}")
 
     preserve_faces = set()
     
@@ -108,38 +148,60 @@ def unwrap_and_bake_selected(obj, master_folder):
             if should_preserve_uv(original_obj, mat):
                 preserve_faces.add(poly.index)
 
+    # Ensure proper selection before UV unwrapping
     bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='DESELECT')
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for poly in original_obj.data.polygons:
-        poly.select = poly.index not in preserve_faces
-    bpy.ops.object.mode_set(mode='EDIT')
-
-    bpy.ops.uv.smart_project(
-        angle_limit=66.0,
-        island_margin=0.00,
-        correct_aspect=True,
-        scale_to_bounds=True
-    )
+    bpy.ops.mesh.select_all(action='SELECT')  # Select all faces first
+    
+    # Check if we have any faces to unwrap
+    if len(obj.data.polygons) == 0:
+        log_progress("Error: Object has no faces to unwrap")
+        return
+        
+    # Ensure we're in face select mode
+    bpy.context.tool_settings.mesh_select_mode = (False, False, True)
+    
+    # Mark seams for better unwrapping
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.mark_seam(clear=True)  # Clear existing seams
+    bpy.ops.mesh.mark_sharp(clear=True)  # Clear existing sharp edges
+    
+    try:
+        bpy.ops.uv.smart_project(
+            angle_limit=45.0,
+            island_margin=0.03,
+            area_weight=0.7,
+            correct_aspect=True,
+            scale_to_bounds=True
+        )
+    except RuntimeError as e:
+        log_progress(f"UV unwrapping failed: {str(e)}")
+        # Try basic unwrap as fallback
+        try:
+            bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.03)
+        except:
+            log_progress("Both UV unwrapping methods failed!")
+            return
     
     bpy.ops.object.mode_set(mode='OBJECT')
 
     def create_black_image(name, width, height):
         img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
-        img.pixels[:] = black_pixels
+        # Create a list of black pixels with alpha
+        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
+        # Convert to float array and assign
+        img.pixels.foreach_set(pixels)
         return img
 
     bake_image_main = create_black_image(
         name=f"{original_obj.name}_bake_main",
-        width=1024,
+        width=1024,  # Increased from 2048 for better quality
         height=1024
     )
     
     bake_image_preserved = create_black_image(
         name=f"{original_obj.name}_bake_preserved",
-        width=512,
-        height=512
+        width=1024,  # Increased from 512 for better quality
+        height=1024
     )
 
     has_transparency = False
@@ -218,16 +280,32 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.context.scene.cycles.preview_denoising = True
     
     bpy.context.scene.render.engine = 'CYCLES'
-    bpy.context.scene.cycles.samples = 128
+    bpy.context.scene.cycles.samples = 512  # Increased from 256
     bpy.context.scene.cycles.bake_type = 'DIFFUSE'
     bpy.context.scene.render.bake.use_pass_direct = True
     bpy.context.scene.render.bake.use_pass_indirect = True
-    bpy.context.scene.render.bake.margin = 8
+    bpy.context.scene.render.bake.margin = 32  # Increased from 16
+    bpy.context.scene.render.bake.use_selected_to_active = False
+    bpy.context.scene.render.bake.use_clear = True
+    bpy.context.scene.render.bake.target = 'IMAGE_TEXTURES'
+    
+    # Add cage settings for better projection
+    bpy.context.scene.render.bake.use_cage = True
+    bpy.context.scene.render.bake.cage_extrusion = 0.05  # Reduced from 0.1 for more precision
+    
+    # Add anti-aliasing settings
+    bpy.context.scene.cycles.use_adaptive_sampling = True
+    bpy.context.scene.cycles.adaptive_threshold = 0.01
+    bpy.context.scene.cycles.denoiser = 'OPENIMAGEDENOISE'
+    
+    # Add padding between UV islands
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.uv.pack_islands(margin=0.05)  # Increased UV island margin
+    bpy.ops.object.mode_set(mode='OBJECT')
     
     if has_transparency:
         bake_image_main.alpha_mode = 'NONE'
         bake_image_preserved.alpha_mode = 'NONE'
-        print("Transparency detected. Disabling alpha channel in bake.")
     
     original_obj.select_set(True)
     bpy.context.view_layer.objects.active = original_obj
@@ -247,13 +325,20 @@ def unwrap_and_bake_selected(obj, master_folder):
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         return os.path.join(desktop, filename)
     
+    print_subheader("BAKING TEXTURES")
     if preserve_faces:
-        bake_image_preserved.pixels[:] = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
+        log_progress("Baking preserved UV areas...", 1)
+        # Initialize black pixels for preserved image
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Updated size
+        bake_image_preserved.pixels.foreach_set(black_pixels)
         for poly in original_obj.data.polygons:
             poly.select = poly.index in preserve_faces
         bpy.ops.object.bake(type='DIFFUSE')
 
-    bake_image_main.pixels[:] = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)
+    log_progress("Baking main texture...", 1)
+    # Initialize black pixels for main image
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Updated size
+    bake_image_main.pixels.foreach_set(black_pixels)
     for poly in original_obj.data.polygons:
         poly.select = poly.index not in preserve_faces
     bpy.ops.object.bake(type='DIFFUSE')
@@ -274,88 +359,184 @@ def unwrap_and_bake_selected(obj, master_folder):
     except Exception as e:
         print(f"Error saving XMODEL_BIN file: {e}")
 
-def split_object_into_sixteen():
-    obj = bpy.context.active_object
-    if not obj or obj.type != 'MESH':
-        print("Please select a mesh object")
-        return None, None
+def verify_and_split_if_needed(obj):
+    MAX_SAFE_VERTICES = 12000  # Even more conservative for OSRS terrain
+    ABSOLUTE_MAX = 60000  # Far below 65534 for safety margin
     
+    def optimize_mesh(obj):
+        print(f"Optimizing mesh for {obj.name}")
+        bpy.context.view_layer.objects.active = obj
+        
+        # Clean up mesh before processing
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.remove_doubles(threshold=0.001)  # Increased threshold for OSRS models
+        bpy.ops.mesh.dissolve_degenerate()  # Remove bad geometry
+        bpy.ops.mesh.delete_loose()  # Remove floating vertices
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        return len(obj.data.vertices)
+
+    def force_decimation(obj, target_ratio=None):
+        print(f"Applying aggressive decimation to {obj.name}")
+        bpy.context.view_layer.objects.active = obj
+        
+        current_verts = len(obj.data.vertices)
+        if target_ratio is None:
+            target_ratio = (ABSOLUTE_MAX * 0.90) / current_verts  # 90% of limit
+        
+        # First try planar decimation
+        modifier = obj.modifiers.new(name="Planar", type='DECIMATE')
+        modifier.decimate_type = 'DISSOLVE'
+        modifier.angle_limit = 0.087  # 5 degrees
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+        
+        # If still too high, use collapse decimation
+        if len(obj.data.vertices) > ABSOLUTE_MAX:
+            modifier = obj.modifiers.new(name="Collapse", type='DECIMATE')
+            modifier.decimate_type = 'COLLAPSE'
+            modifier.ratio = min(target_ratio, 0.95)
+            bpy.ops.object.modifier_apply(modifier=modifier.name)
+        
+        optimize_mesh(obj)
+        print(f"Decimated from {current_verts} to {len(obj.data.vertices)} vertices")
+
+    def perform_emergency_split(obj):
+        print(f"Performing multi-pass split for {obj.name}")
+        bpy.context.view_layer.objects.active = obj
+        
+        # Try optimization first
+        optimize_mesh(obj)
+        if len(obj.data.vertices) <= MAX_SAFE_VERTICES:
+            return True
+            
+        # Multi-pass splitting
+        for attempt in range(3):  # Try up to 3 times
+            if len(obj.data.vertices) <= MAX_SAFE_VERTICES:
+                break
+                
+            for axis in [2, 0, 1]:  # Z, X, Y axes
+                bounds = [obj.matrix_world @ Vector(coord) for coord in obj.bound_box]
+                min_val = min(v[axis] for v in bounds)
+                max_val = max(v[axis] for v in bounds)
+                mid = (min_val + max_val) / 2
+                
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                plane_no = [0, 0, 0]
+                plane_no[axis] = 1
+                
+                # Try different split positions if needed
+                for split_factor in [0.5, 0.333, 0.667]:
+                    split_pos = min_val + (max_val - min_val) * split_factor
+                    bpy.ops.mesh.bisect(
+                        plane_co=[split_pos if i == axis else 0 for i in range(3)],
+                        plane_no=plane_no,
+                        clear_inner=True,
+                        clear_outer=False
+                    )
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                    
+                    new_objs = [o for o in bpy.context.selected_objects if o != obj]
+                    if new_objs:
+                        optimize_mesh(obj)
+                        optimize_mesh(new_objs[0])
+                        
+                        # Recursively process both parts
+                        verify_and_split_if_needed(obj)
+                        verify_and_split_if_needed(new_objs[0])
+                        return True
+        
+        # If splitting failed, force decimation
+        print("Split failed, forcing decimation")
+        force_decimation(obj, target_ratio=0.85)  # More aggressive ratio
+        return True
+
+    # Initial cleanup and check
+    optimize_mesh(obj)
+    vert_count = len(obj.data.vertices)
+    print(f"Checking {obj.name}: {vert_count} vertices")
+    
+    if vert_count > ABSOLUTE_MAX:
+        print(f"CRITICAL: {obj.name} exceeds vertex limit")
+        perform_emergency_split(obj)
+        return True
+    
+    if vert_count > MAX_SAFE_VERTICES:
+        return perform_emergency_split(obj)
+    
+    return False
+
+def split_by_material_vertices(obj):
+    print_header("STARTING MATERIAL SPLIT")
+    MAX_VERTICES = 12000  # Match the new MAX_SAFE_VERTICES
+    
+    if not obj or obj.type != 'MESH':
+        log_progress("Error: Please select a mesh object")
+        return None, None
+
+    # Apply transformations and clean mesh
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.mesh.remove_doubles(threshold=0.0001)
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    
-    verts = [v.co for v in obj.data.vertices]
-    min_x = min(v.x for v in verts)
-    max_x = max(v.x for v in verts)
-    min_y = min(v.y for v in verts)
-    max_y = max(v.y for v in verts)
-    
-    x_lines = [min_x + (max_x - min_x) * i / 4 for i in range(5)]
-    y_lines = [min_y + (max_y - min_y) * i / 4 for i in range(5)]
-    
-    for group in obj.vertex_groups:
-        obj.vertex_groups.remove(group)
-    
-    groups = []
-    for i in range(16):
-        group = obj.vertex_groups.new(name=f"Section_{i+1}")
-        groups.append(group)
-    
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.mesh.quads_convert_to_tris()
     bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Build efficient lookup structures
+    vert_to_polys = {i: [] for i in range(len(obj.data.vertices))}
+    vert_to_mats = {i: set() for i in range(len(obj.data.vertices))}
     
-    for v in obj.data.vertices:
-        co = v.co
-        
-        x_index = 0
-        y_index = 0
-        
-        for i in range(4):
-            if co.x >= x_lines[i] and co.x <= x_lines[i + 1]:
-                x_index = i
-            if co.y >= y_lines[i] and co.y <= y_lines[i + 1]:
-                y_index = i
-        
-        group_index = x_index + (y_index * 4)
-        groups[group_index].add([v.index], 1.0, 'REPLACE')
-        
-        threshold = 0.0001
-        
-        for i in range(1, 4):
-            if abs(co.x - x_lines[i]) < threshold:
-                left_index = (i - 1) + (y_index * 4)
-                right_index = i + (y_index * 4)
-                groups[left_index].add([v.index], 1.0, 'REPLACE')
-                groups[right_index].add([v.index], 1.0, 'REPLACE')
-        
-        for i in range(1, 4):
-            if abs(co.y - y_lines[i]) < threshold:
-                bottom_index = x_index + ((i - 1) * 4)
-                top_index = x_index + (i * 4)
-                groups[bottom_index].add([v.index], 1.0, 'REPLACE')
-                groups[top_index].add([v.index], 1.0, 'REPLACE')
-                
-        for x in range(1, 4):
-            for y in range(1, 4):
-                if (abs(co.x - x_lines[x]) < threshold and 
-                    abs(co.y - y_lines[y]) < threshold):
-                    indices = [
-                        (x - 1) + ((y - 1) * 4),
-                        x + ((y - 1) * 4),
-                        (x - 1) + (y * 4),
-                        x + (y * 4)
-                    ]
-                    for idx in indices:
-                        groups[idx].add([v.index], 1.0, 'REPLACE')
+    for poly in obj.data.polygons:
+        mat_index = poly.material_index
+        for vert_idx in poly.vertices:
+            vert_to_polys[vert_idx].append(poly.index)
+            vert_to_mats[vert_idx].add(mat_index)
+
+    # Create groups
+    vertex_groups = []
+    current_group = set()
+    processed_verts = set()
     
+    for mat_index in range(len(obj.material_slots)):
+        
+        # Get all vertices using this material
+        material_verts = {v for v, mats in vert_to_mats.items() if mat_index in mats}
+        material_verts -= processed_verts
+        
+        for vert_idx in material_verts:
+            if len(current_group) >= MAX_VERTICES:
+                if current_group:
+                    vertex_groups.append(current_group)
+                current_group = set()
+            
+            current_group.add(vert_idx)
+            processed_verts.add(vert_idx)
+            
+            # Add connected vertices that share the material
+            for poly_idx in vert_to_polys[vert_idx]:
+                poly = obj.data.polygons[poly_idx]
+                if poly.material_index == mat_index:
+                    for connected_vert in poly.vertices:
+                        if (connected_vert not in processed_verts and 
+                            len(current_group) < MAX_VERTICES):
+                            current_group.add(connected_vert)
+                            processed_verts.add(connected_vert)
+
+    if current_group:
+        vertex_groups.append(current_group)
+
+    print_subheader("PROCESSING VERTEX GROUPS")
+    for i, vertices in enumerate(vertex_groups):
+        log_progress(f"Processing group {i + 1}/{len(vertex_groups)}", 1)
+        group = obj.vertex_groups.new(name=f"Split_{i+1}")
+        for vert_idx in vertices:
+            group.add([vert_idx], 1.0, 'REPLACE')
+
+    # Separate by vertex groups
     new_objects = []
-    for i in range(16):
-        group_name = f"Section_{i + 1}"
+    for i in range(len(vertex_groups)):
+        group_name = f"Split_{i+1}"
         obj.vertex_groups.active_index = obj.vertex_groups[group_name].index
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.select_all(action='DESELECT')
@@ -365,18 +546,56 @@ def split_object_into_sixteen():
         
         new_obj = [o for o in bpy.context.selected_objects if o != obj][-1]
         new_objects.append(new_obj)
-    
-    bpy.ops.object.select_all(action='DESELECT')
-    
+
+    # Clean up original object
     obj_name = obj.name
-    
+    bpy.ops.object.select_all(action='DESELECT')
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.delete()
 
-    return obj_name, new_objects
+    print("Split operation completed")
+    
+    # Verify and potentially split large objects further
+    final_objects = []
+    for new_obj in new_objects:
+        if verify_and_split_if_needed(new_obj):
+            # If object was split, add all visible objects that aren't the original
+            final_objects.extend([o for o in bpy.context.visible_objects 
+                               if o.type == 'MESH' and o not in new_objects])
+        else:
+            final_objects.append(new_obj)
+    
+    return obj_name, final_objects
+
+def clear_bake_image_references(obj):
+    for mat_slot in obj.material_slots:
+        mat = mat_slot.material
+        if mat and mat.use_nodes:
+            for node in list(mat.node_tree.nodes):
+                if node.type == 'TEX_IMAGE' and node.image and any(suffix in node.image.name for suffix in ["_bake_main", "_bake_preserved"]):
+                    node.image = None
 
 def split_and_bake():
-    obj_name, new_objects = split_object_into_sixteen()
+    start_time = datetime.now()  # Track start time
+    print_header("STARTING SPLIT AND BAKE OPERATION")
+    obj = bpy.context.active_object
+    
+    if not obj:
+        log_progress("Error: No object selected")
+        return
+        
+    log_progress("Applying modifiers...")
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    for mod in obj.modifiers:
+        try:
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+        except:
+            print(f"Couldn't apply {mod.name}, removing instead")
+            obj.modifiers.remove(mod)
+    
+    obj_name, new_objects = split_by_material_vertices(obj)
     
     if obj_name is None:
         print("No object selected or object is not a mesh.")
@@ -389,9 +608,11 @@ def split_and_bake():
         print("Could not create master export folder!")
         return
     
+    print_subheader("PROCESSING OBJECTS")
     if new_objects:
-        for i, new_obj in enumerate(new_objects):
-            print(f"Processing object {i+1} of {len(new_objects)}")
+        total_objects = len(new_objects)
+        for i, new_obj in enumerate(new_objects, 1):
+            log_progress(f"Baking object {i} of {total_objects}...", 1)
             
             for img in list(bpy.data.images):
                 if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
@@ -403,8 +624,9 @@ def split_and_bake():
             bpy.context.view_layer.objects.active = new_obj
             unwrap_and_bake_selected(new_obj, master_folder)
             
+            clear_bake_image_references(new_obj)
             for img in list(bpy.data.images):
-                if img.name.startswith(f"{new_obj.name}_bake"):
+                if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
                     img.user_clear()
                     bpy.data.images.remove(img, do_unlink=True)
             
@@ -412,9 +634,50 @@ def split_and_bake():
             bpy.data.objects.remove(new_obj, do_unlink=True)
             bpy.data.meshes.remove(mesh_data, do_unlink=True)
             
-            
             bpy.context.view_layer.update()
     else:
         print("No objects were created during the split operation.")
+    
+    # Add new code to handle remaining mesh objects
+    print()
+    print("Checking for remaining mesh objects...")
+    remaining_meshes = [obj for obj in bpy.context.scene.objects 
+                       if obj.type == 'MESH' and obj.visible_get()]
+    
+    if remaining_meshes:
+        print(f"Found {len(remaining_meshes)} remaining mesh objects to process")
+        for i, rem_obj in enumerate(remaining_meshes):
+            print()
+            print(f"Processing remaining object {i+1} of {len(remaining_meshes)}: {rem_obj.name}")
+            
+            # Clear any existing bake images
+            for img in list(bpy.data.images):
+                if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
+                    img.user_clear()
+                    bpy.data.images.remove(img, do_unlink=True)
+            
+            bpy.context.view_layer.update()
+            
+            # Process the remaining object
+            bpy.context.view_layer.objects.active = rem_obj
+            unwrap_and_bake_selected(rem_obj, master_folder)
+            
+            clear_bake_image_references(rem_obj)
+            for img in list(bpy.data.images):
+                if img.name.startswith(f"{rem_obj.name}_bake"):
+                    img.user_clear()
+                    bpy.data.images.remove(img, do_unlink=True)
+            
+            # Clean up the object
+            mesh_data = rem_obj.data
+            bpy.data.objects.remove(rem_obj, do_unlink=True)
+            bpy.data.meshes.remove(mesh_data, do_unlink=True)
+            
+            bpy.context.view_layer.update()
+
+    print_header("OPERATION COMPLETED")
+    end_time = datetime.now()  # Track end time
+    elapsed = (end_time - start_time).total_seconds()
+    print(f"Bake completed in {elapsed:.2f} seconds!")
 
 split_and_bake()
