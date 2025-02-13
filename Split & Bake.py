@@ -317,6 +317,47 @@ def unwrap_and_bake_selected(obj, master_folder):
     original_obj.select_set(True)
     bpy.context.view_layer.objects.active = original_obj
 
+    # Optimize Cycles settings for faster baking
+    bpy.context.scene.cycles.device = 'GPU'
+    bpy.context.scene.cycles.use_denoising = False  # Disable denoising during bake
+    bpy.context.scene.cycles.samples = 256  # Reduced from 2048
+    bpy.context.scene.cycles.diffuse_bounces = 1  # Reduced from 4
+    bpy.context.scene.cycles.caustics_reflective = False
+    bpy.context.scene.cycles.caustics_refractive = False
+    bpy.context.scene.cycles.use_fast_gi = True  # Enable fast GI approximation
+    bpy.context.scene.cycles.ao_bounces = 1
+    
+    # Optimize render settings
+    bpy.context.scene.render.bake.margin = 4  # Reduced from 16
+    bpy.context.scene.render.bake.use_clear = False  # Don't clear images before baking
+    bpy.context.scene.render.use_persistent_data = True  # Keep data between renders
+    
+    # Optimize lighting setup - use fewer lights with higher energy
+    for obj in bpy.data.objects:
+        if obj.type == 'LIGHT':
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+    # Simplified lighting setup with just 3 key lights
+    lights = [
+        ('Top', (0, 0, -3.14159), 8.0),
+        ('Front', (1.5708, 0, 0), 6.0),
+        ('Side', (0, -1.5708, 0), 6.0)
+    ]
+
+    for name, rotation, energy in lights:
+        light_data = bpy.data.lights.new(name=name, type='SUN')
+        light_data.energy = energy
+        light_data.angle = 90.0  # Wider angle for better coverage
+        light_object = bpy.data.objects.new(name=name, object_data=light_data)
+        bpy.context.scene.collection.objects.link(light_object)
+        light_object.rotation_euler = rotation
+
+    # Optimize world lighting
+    bpy.context.scene.world.use_nodes = True
+    world_nodes = bpy.context.scene.world.node_tree.nodes
+    world_nodes["Background"].inputs["Strength"].default_value = 1.0  # Reduced from 2.0
+    world_nodes["Background"].inputs["Color"].default_value = (0.8, 0.8, 0.8, 1)  # Slightly darker
+
     def get_save_path(filename):
         possible_paths = [
             bpy.path.abspath("//"),
@@ -371,6 +412,11 @@ def unwrap_and_bake_selected(obj, master_folder):
             print("Failed to export XMODEL_BIN file")
     except Exception as e:
         print(f"Error saving XMODEL_BIN file: {e}")
+
+    # After baking is complete, remove the lights
+    for obj in bpy.data.objects:
+        if obj.type == 'LIGHT':
+            bpy.data.objects.remove(obj, do_unlink=True)
 
 def verify_and_split_if_needed(obj):
     MAX_SAFE_VERTICES = 12000  # Even more conservative for OSRS terrain
