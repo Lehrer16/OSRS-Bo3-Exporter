@@ -13,7 +13,7 @@ This application takes GLTF files from [OSRS Enviroment Exporter](https://github
 
 1. export model from OSRS
 2. open gltf in Blender
-3. Select all meshs you want and highlight the top one then press "ctrl + J"
+3. Select all meshs you want and highlight the top one then press "ctrl + J" to join meshs into one
 4. save the blender file in Bo3 Root/*New Folder*
 5. select your mesh and run script
 6. After the script completes your models should be in APE
