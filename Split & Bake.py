@@ -70,10 +70,8 @@ def create_gdt_content(filepath, obj_name):
     sub_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
     curr_folder = os.path.basename(os.path.dirname(filepath))
     
-    rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
-    safe_name = obj_name.replace('.', '_').lower()
-    rel_xmodel = f"{rel_path}\\{safe_name}.xmodel_bin"
-    rel_texture = f"{parent_folder}\\{sub_folder}\\{curr_folder}\\{safe_name}_bake_main.png"
+    rel_xmodel = os.path.join("..", parent_folder, sub_folder, curr_folder, f"{obj_name.replace('.', '_').lower()}.xmodel_bin").replace('/', '\\')
+    rel_texture = os.path.join(parent_folder, sub_folder, curr_folder, f"{obj_name.replace('.', '_').lower()}_bake_main.png").replace('/', '\\')
 
     gdt_name = obj_name.replace('.', '_')
 
@@ -160,6 +158,8 @@ class GDTBuilder:
         })
         
     def add_model(self, name, rel_path, material_name):
+        # Convert forward slashes to double backslashes
+        rel_path = rel_path.replace('/', '\\\\').replace('\\', '\\\\')
         self.models.append({
             'name': name,
             'path': rel_path,
@@ -170,10 +170,11 @@ class GDTBuilder:
         gdt_content = "{\n"
         
         for img in self.images:
+            img_path = img['path'].replace('/', '\\')
             gdt_content += f'''    "i_{img['name']}" ( "image.gdf" )
     {{
         "arabicUnsafe" "0"
-        "baseImage" "{img['path']}"
+        "baseImage" "{img_path}"
         "clampU" "0"
         "clampV" "0"
         "colorSRGB" "0"
@@ -231,8 +232,16 @@ class GDTBuilder:
         "alphaTexture" "0"
         "arabicUnsafe" "0"
         "areaLight" "0"
+        "backlightScatterColor" "1 1 1 1"
         "bulletClip" "0"
+        "camoDetailMap" ""
+        "camoMaskMap" ""
+        "canShootClip" "0"
         "caulk" "0"
+        "causticMap" ""
+        "colorDetailMap" ""
+        "colorDetailScaleX" "8"
+        "colorDetailScaleY" "8"
         "colorMap" "i_{mat['image']}"
         "colorTint" "1 1 1 1"
         "colorWriteAlpha" "Enable"
@@ -241,6 +250,7 @@ class GDTBuilder:
         "colorWriteRed" "Enable"
         "detail" "0"
         "doNotUse" "0"
+        "doubleSidedLighting" "0"
         "drawToggle" "0"
         "germanUnsafe" "0"
         "glossRangeMax" "7.0"
@@ -253,10 +263,11 @@ class GDTBuilder:
         "japaneseUnsafe" "0"
         "materialCategory" "Geometry Advanced"
         "materialType" "lit_advanced_fullspec"
+        "surfaceType" "concrete"
         "specAmount" "1"
         "specColorTint" "0.760757 0.764664 0.764664 1"
-        "surfaceType" "default"
         "template" "material.template"
+        "usage" "<not in editor>"
     }}\n\n'''
 
         for model in self.models:
@@ -277,9 +288,35 @@ class GDTBuilder:
         "autogenLowLodPercent" "25"
         "autogenMediumLod" "0"
         "autogenMediumLodPercent" "50"
+        "boneControllers" ""
+        "boneStabilizers" ""
+        "BulletCollisionFile" ""
+        "BulletCollisionLOD" "High"
+        "BulletCollisionRigid" "0"
+        "CollisionMap" ""
+        "cullOutDiameter" "0"
+        "cullOutOffsetCP" "1"
+        "cullOutOffsetMP" "1"
+        "customAutogenParams" "0"
+        "DetailShadows" "0"
+        "doNotUse" "0"
+        "dropLOD" "Auto"
         "filename" "{model['path']}"
+        "forceLod4Rigid" "0"
+        "forceLod5Rigid" "0"
+        "forceLod6Rigid" "0"
+        "forceLod7Rigid" "0"
+        "forceLowestLodRigid" "0"
+        "forceLowLodRigid" "0"
+        "forceMediumLodRigid" "0"
+        "forceResident" "0"
+        "fp32" "0"
         "germanUnsafe" "0"
         "heroAsset" "0"
+        "heroLighting" "0"
+        "highLodDist" "0"
+        "hitBoxModel" ""
+        "isSiege" "0"
         "japaneseUnsafe" "0"
         "LodColorPriority" "0.008"
         "lodNormalPriority" "1.54"
@@ -287,11 +324,22 @@ class GDTBuilder:
         "lodPresets" "performance"
         "LodUvPriority" "3.5"
         "noCastShadow" "0"
+        "noOutdoorOcclude" "0"
+        "notInEditor" "0"
+        "physicsConstraints" ""
+        "physicsPreset" ""
+        "preserveOriginalUVs" "0"
         "scale" "10.0"
+        "scaleCollMap" "0"
         "ShadowLOD" "Auto"
         "skinOverride" "rs_untextured {model['material']}\\r\\n"
         "type" "animated"
+        "usage_attachment" "0"
+        "usage_hero" "0"
+        "usage_view" "0"
+        "usage_weapon" "0"
         "usage_zombie_body" "1"
+        "usage_zombie_world_prop" "0"
     }}\n\n'''
 
         gdt_content += "}"
@@ -332,7 +380,9 @@ def export_to_xmodel(filepath, obj):
     
     try:
         safe_name = obj.name.replace('.', '_').lower()
-        filepath = os.path.join(os.path.dirname(filepath), f"{safe_name}.xmodel_bin")
+        xmodel_filename = f"{safe_name}.xmodel_bin"
+        xmodel_dir = os.path.dirname(filepath)
+        filepath = os.path.join(xmodel_dir, xmodel_filename)
         
         result = bpy.ops.export_scene.xmodel(
             filepath=filepath,
@@ -356,7 +406,7 @@ def export_to_xmodel(filepath, obj):
             curr_folder = os.path.basename(os.path.dirname(filepath))
             
             rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
-            rel_xmodel = f"{rel_path}\\{safe_name}.xmodel_bin"
+            rel_xmodel = os.path.join("..", parent_folder, sub_folder, curr_folder, xmodel_filename).replace('/', '\\')
             
             gdt_builder.add_model(safe_name, rel_xmodel, f"{safe_name}_m")
             return True
@@ -424,7 +474,13 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.ops.mesh.mark_seam(clear=True)
     bpy.ops.mesh.mark_sharp(clear=True)
     
-    log_progress("Starting UV unwrap...", 1)
+    # Select only non-preserved faces for unwrapping
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for poly in original_obj.data.polygons:
+        poly.select = poly.index not in preserve_faces
+    bpy.ops.object.mode_set(mode='EDIT')
+    
+    log_progress("Starting UV unwrap for non-preserved faces...", 1)
     try:
         bpy.ops.uv.smart_project(
             angle_limit=89.0,
@@ -461,8 +517,8 @@ def unwrap_and_bake_selected(obj, master_folder):
     
     bake_image_preserved = create_black_image(
         name=f"{safe_name}_bake_preserved",
-        width=1024,
-        height=1024
+        width=512,
+        height=512
     )
 
     has_transparency = False
@@ -588,10 +644,15 @@ def unwrap_and_bake_selected(obj, master_folder):
     print_subheader("BAKING TEXTURES")
     if preserve_faces:
         log_progress("Starting preserved UV bake...", 1)
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
         bake_image_preserved.pixels.foreach_set(black_pixels)
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='DESELECT')
         for poly in original_obj.data.polygons:
             poly.select = poly.index in preserve_faces
+        bpy.ops.object.mode_set(mode='OBJECT')
+
         log_progress("Beginning preserved bake operation...", 2)
         bpy.ops.object.bake(type='DIFFUSE')
         log_progress("Preserved bake completed", 2)
@@ -599,8 +660,13 @@ def unwrap_and_bake_selected(obj, master_folder):
     log_progress("Starting main texture bake...", 1)
     black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)
     bake_image_main.pixels.foreach_set(black_pixels)
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
     for poly in original_obj.data.polygons:
         poly.select = poly.index not in preserve_faces
+    bpy.ops.object.mode_set(mode='OBJECT')
+
     log_progress("Beginning main bake operation...", 2)
     bpy.ops.object.bake(type='DIFFUSE')
     log_progress("Main bake completed", 2)
