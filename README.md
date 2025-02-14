@@ -10,14 +10,14 @@ This application takes GLTF files from [OSRS Enviroment Exporter](https://github
 [Better Blender CoD](https://github.com/marv7000/BetterBlenderCOD) (follow installation instructions of the add-on)
 
 ## Usage
-```python
+
 1. export model from OSRS
 2. open gltf in Blender
 3. Select all meshs you want and highlight the top one then press "ctrl + J"
 4. save the blender file in Bo3 Root/*New Folder*
 5. select your mesh and run script
 6. After the script completes your models should be in APE
-```
+
 
 
 
