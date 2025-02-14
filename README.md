@@ -1,24 +1,19 @@
 # OSRS Bo3 Exporter
 
-This application calls from www.openweathermap.org 's api to display weather for a user inputed city. It also stores a history of previously viewed cities that can be recalled.
+This application takes GLTF files from [OSRS Enviroment Exporter](https://github.com/ConnorDY/OSRS-Environment-Exporter) splits them into appropriate sizes and then converts them into useable models in bo3 mod tools with newly created entries in ape.
 
-## Installation
 
-# prerequisites
+# Prerequisites
 
 [Blender 3.6](https://www.blender.org/download/releases/3-6/) (Havent tested newer versions)
 
+[Better Blender CoD](https://github.com/marv7000/BetterBlenderCOD) (follow installation instructions of the add-on)
+
 ```python
-npm i
 
-npm run build
-
-npm run start
 ```
 
-## Example Site
 
-https://weather-checker-etme.onrender.com
 
 ## Contributing
 
