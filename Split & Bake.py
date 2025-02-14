@@ -61,9 +61,259 @@ def create_export_folder(master_folder, obj_name):
         print("No master folder available.")
         return None
     
-    export_folder = os.path.join(master_folder, f"{obj_name}_bake")
+    # Keep dots in the parent folder name, only sanitize the new folder name
+    export_folder = os.path.join(master_folder, f"{obj_name.replace('.', '_')}_bake")
     os.makedirs(export_folder, exist_ok=True)
     return export_folder
+
+def create_gdt_content(filepath, obj_name):
+    """Create GDT file content for an xmodel and its texture"""
+    # Convert absolute paths to relative paths - use forward slashes for COD
+    parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(filepath))))
+    sub_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
+    curr_folder = os.path.basename(os.path.dirname(filepath))
+    
+    # Build paths - xmodel keeps ../ prefix, texture doesn't
+    rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
+    # Ensure lowercase for all file references
+    safe_name = obj_name.replace('.', '_').lower()
+    rel_xmodel = f"{rel_path}\\{safe_name}.xmodel_bin"
+    rel_texture = f"{parent_folder}\\{sub_folder}\\{curr_folder}\\{safe_name}_bake_main.png"
+
+    # Sanitize names for GDT by replacing periods with underscores
+    gdt_name = obj_name.replace('.', '_')
+
+    # Create GDT file content with proper structure
+    gdt_content = "{\n"
+    
+    # Image entry with all required parameters
+    gdt_content += f'''    "i_{safe_name}" ( "image.gdf" )
+    {{
+        "arabicUnsafe" "0"
+        "baseImage" "{rel_texture}"
+        "clampU" "0"
+        "clampV" "0"
+        "colorSRGB" "0"
+        "compressionMethod" "compressed high color"
+        "coreSemantic" "sRGB3chAlpha"
+        "doNotResize" "0"
+        "forceStreaming" "0"
+        "germanUnsafe" "0"
+        "imageType" "Texture"
+        "japaneseUnsafe" "0"
+        "mipBase" "1/1"
+        "semantic" "diffuseMap"
+        "streamable" "1"
+        "type" "image"
+    }}
+
+'''
+
+    # Material entry with proper lit_advanced_fullspec settings
+    gdt_content += f'''    "{safe_name}_m" ( "material.gdf" )
+    {{
+        "colorMap" "i_{safe_name}"
+        "materialType" "lit_advanced_fullspec"
+        "surfaceType" "default"
+        "template" "material.template"
+        "glossSurfaceType" "paint"
+        "specAmount" "1"
+        "specColorTint" "0.760757 0.764664 0.764664 1"
+        "glossRangeMax" "7.0"
+        "glossRangeMin" "2.0"
+        "materialCategory" "Geometry Advanced"
+        "gSpecLobeAWeight" "0.375" 
+        "gSpecLobeRoughnessA" "0.05"
+        "gSpecLobeRoughnessB" "0.1875"
+        "gSpecIndexOfRefraction" "1.333"
+    }}
+
+'''
+
+    # XModel entry with all required parameters
+    gdt_content += f'''    "{safe_name}" ( "xmodel.gdf" )
+    {{
+        "filename" "{rel_xmodel}"
+        "type" "animated"
+        "usage_zombie_body" "1"
+        "scale" "10.0"
+        "skinOverride" "rs_untextured {safe_name}_m\\r\\n"
+    }}'''
+
+    gdt_content += "\n}"
+    return gdt_content
+
+def save_gdt_file(filepath, content):
+    """Save GDT file with the provided content"""
+    try:
+        with open(filepath, 'w') as f:
+            f.write(content)
+        log_progress(f"GDT file saved: {filepath}")
+    except Exception as e:
+        log_progress(f"Error saving GDT file: {e}")
+
+# Add new consolidated GDT tracking
+class GDTBuilder:
+    def __init__(self):
+        self.images = []
+        self.materials = []
+        self.models = []
+        
+    def add_image(self, name, rel_path):
+        self.images.append({
+            'name': name,
+            'path': rel_path
+        })
+        
+    def add_material(self, name, image_name):
+        self.materials.append({
+            'name': name,
+            'image': image_name
+        })
+        
+    def add_model(self, name, rel_path, material_name):
+        self.models.append({
+            'name': name,
+            'path': rel_path,
+            'material': material_name
+        })
+        
+    def build_gdt_content(self):
+        gdt_content = "{\n"
+        
+        # Add all images with full parameter list matching slepe.gdt
+        for img in self.images:
+            gdt_content += f'''    "i_{img['name']}" ( "image.gdf" )
+    {{
+        "arabicUnsafe" "0"
+        "baseImage" "{img['path']}"
+        "clampU" "0"
+        "clampV" "0"
+        "colorSRGB" "0"
+        "compositeChannel1" ""
+        "compositeChannel2" ""
+        "compositeChannel3" ""
+        "compositeChannel4" ""
+        "compositeImage1" ""
+        "compositeImage2" ""
+        "compositeImage3" ""
+        "compositeImage4" ""
+        "compositeSample1" ""
+        "compositeSample2" ""
+        "compositeSample3" ""
+        "compositeSample4" ""
+        "compositeType" ""
+        "compressionMethod" "compressed high color"
+        "coreSemantic" "sRGB3chAlpha"
+        "doNotResize" "0"
+        "forceStreaming" "0"
+        "fromAlpha" "0"
+        "germanUnsafe" "0"
+        "glossVarianceScale" "1"
+        "himipStreaming" "0"
+        "imageType" "Texture"
+        "japaneseUnsafe" "0"
+        "legallyApproved" "0"
+        "matureContent" "0"
+        "mipBase" "1/1"
+        "mipMask" ""
+        "mipMode" "Average"
+        "mipNorm" "0"
+        "noMipMaps" "0"
+        "noPicMip" "0"
+        "premulAlpha" "0"
+        "semantic" "diffuseMap"
+        "streamable" "1"
+        "textureAtlasColumnCount" "1"
+        "textureAtlasRowCount" "1"
+        "type" "image"
+    }}\n\n'''
+
+        # Add all materials with full parameter list matching slepe.gdt
+        for mat in self.materials:
+            gdt_content += f'''    "{mat['name']}" ( "material.gdf" )
+    {{
+        "adsZscaleOn" "0"
+        "aiClip" "0"
+        "aiSightClip" "0"
+        "alphaDissolveInt" "255"
+        "alphaDissolveMarginAbove" "0"
+        "alphaMap" ""
+        "alphaRevealMap" ""
+        "alphaRevealRamp" "0.5"
+        "alphaRevealSoftEdge" "0.01"
+        "alphaTexture" "0"
+        "arabicUnsafe" "0"
+        "areaLight" "0"
+        "bulletClip" "0"
+        "caulk" "0"
+        "colorMap" "i_{mat['image']}"
+        "colorTint" "1 1 1 1"
+        "colorWriteAlpha" "Enable"
+        "colorWriteBlue" "Enable"
+        "colorWriteGreen" "Enable"
+        "colorWriteRed" "Enable"
+        "detail" "0"
+        "doNotUse" "0"
+        "drawToggle" "0"
+        "germanUnsafe" "0"
+        "glossRangeMax" "7.0"
+        "glossRangeMin" "2.0"
+        "glossSurfaceType" "paint"
+        "gSpecIndexOfRefraction" "1.333"
+        "gSpecLobeAWeight" "0.375"
+        "gSpecLobeRoughnessA" "0.05"
+        "gSpecLobeRoughnessB" "0.1875"
+        "japaneseUnsafe" "0"
+        "materialCategory" "Geometry Advanced"
+        "materialType" "lit_advanced_fullspec"
+        "specAmount" "1"
+        "specColorTint" "0.760757 0.764664 0.764664 1"
+        "surfaceType" "default"
+        "template" "material.template"
+    }}\n\n'''
+
+        # Add all models with full parameter list matching slepe.gdt
+        for model in self.models:
+            gdt_content += f'''    "{model['name']}" ( "xmodel.gdf" )
+    {{
+        "arabicUnsafe" "0"
+        "autogenLod4" "0"
+        "autogenLod4Percent" "13"
+        "autogenLod5" "0"
+        "autogenLod5Percent" "13"
+        "autogenLod6" "0"
+        "autogenLod6Percent" "13"
+        "autogenLod7" "0"
+        "autogenLod7Percent" "13"
+        "autogenLowestLod" "0"
+        "autogenLowestLodPercent" "13"
+        "autogenLowLod" "0"
+        "autogenLowLodPercent" "25"
+        "autogenMediumLod" "0"
+        "autogenMediumLodPercent" "50"
+        "filename" "{model['path']}"
+        "germanUnsafe" "0"
+        "heroAsset" "0"
+        "japaneseUnsafe" "0"
+        "LodColorPriority" "0.008"
+        "lodNormalPriority" "1.54"
+        "lodPositionPriority" "12"
+        "lodPresets" "performance"
+        "LodUvPriority" "3.5"
+        "noCastShadow" "0"
+        "scale" "10.0"
+        "ShadowLOD" "Auto"
+        "skinOverride" "rs_untextured {model['material']}\\r\\n"
+        "type" "animated"
+        "usage_zombie_body" "1"
+    }}\n\n'''
+
+        gdt_content += "}"
+        return gdt_content
+
+# Initialize global GDT builder
+gdt_builder = GDTBuilder()
 
 def export_to_xmodel(filepath, obj):
     # Final verification before export
@@ -101,6 +351,11 @@ def export_to_xmodel(filepath, obj):
     bpy.context.view_layer.objects.active = obj
     
     try:
+        # Sanitize name for GDT and files - ensure lowercase and replace dots with underscores
+        safe_name = obj.name.replace('.', '_').lower()
+        # Update the XMODEL_BIN filepath to use the sanitized name
+        filepath = os.path.join(os.path.dirname(filepath), f"{safe_name}.xmodel_bin")
+        
         result = bpy.ops.export_scene.xmodel(
             filepath=filepath,
             check_existing=True,
@@ -116,10 +371,46 @@ def export_to_xmodel(filepath, obj):
             use_weight_min=True,
             use_weight_min_threshold=0.001
         )
-        return result == {'FINISHED'}
+        
+        if result == {'FINISHED'}:
+            # Get parent folder name (two levels up from the export folder)
+            parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(filepath))))
+            sub_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
+            curr_folder = os.path.basename(os.path.dirname(filepath))
+            
+            # Build relative path including parent folder
+            rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
+            rel_xmodel = f"{rel_path}\\{safe_name}.xmodel_bin"
+            
+            gdt_builder.add_model(safe_name, rel_xmodel, f"{safe_name}_m")
+            return True
+        return False
     except Exception as e:
         print(f"Export error: {str(e)}")
         return False
+
+def save_consolidated_gdt(master_folder, base_name):
+    # Get blend file path and create source_data folder one level up
+    blend_file_path = bpy.data.filepath
+    if blend_file_path:
+        # Get parent directory of blend file
+        blend_parent = os.path.dirname(os.path.dirname(blend_file_path))
+        source_data_path = os.path.join(blend_parent, "source_data")
+    else:
+        # Fallback if blend file not saved - use master folder's parent
+        blend_parent = os.path.dirname(os.path.dirname(master_folder))
+        source_data_path = os.path.join(blend_parent, "source_data")
+    
+    # Create source_data folder
+    os.makedirs(source_data_path, exist_ok=True)
+    
+    # Get consolidated GDT content
+    gdt_content = gdt_builder.build_gdt_content()
+    
+    # Save to source_data folder above blend file location
+    gdt_filepath = os.path.join(source_data_path, f"{base_name}.gdt")
+    save_gdt_file(gdt_filepath, gdt_content)
+    print(f"GDT file saved to: {gdt_filepath}")
 
 def create_blank_image(name, width, height):
     img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
@@ -198,16 +489,18 @@ def unwrap_and_bake_selected(obj, master_folder):
         img.pixels.foreach_set(pixels)
         return img
 
+    # Create texture names with proper formatting
+    safe_name = original_obj.name.replace('.', '_').lower()
     bake_image_main = create_black_image(
-        name=f"{original_obj.name}_bake_main",
-        width=2048,  # Increased resolution
-        height=2048
+        name=f"{safe_name}_bake_main",
+        width=1024,  # Increased resolution
+        height=1024
     )
     
     bake_image_preserved = create_black_image(
-        name=f"{original_obj.name}_bake_preserved",
-        width=2048,  # Increased resolution
-        height=2048
+        name=f"{safe_name}_bake_preserved",
+        width=1024,  # Increased resolution
+        height=1024
     )
 
     has_transparency = False
@@ -286,7 +579,7 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.context.scene.cycles.preview_denoising = True
     
     bpy.context.scene.render.engine = 'CYCLES'
-    bpy.context.scene.cycles.samples = 2048  # Increased samples
+    bpy.context.scene.cycles.samples = 512  # Increased samples
     bpy.context.scene.cycles.diffuse_bounces = 4
     bpy.context.scene.render.bake.margin = 16  # Reduced margin to prevent bleeding
     bpy.context.scene.render.bake.use_pass_direct = True
@@ -317,47 +610,6 @@ def unwrap_and_bake_selected(obj, master_folder):
     original_obj.select_set(True)
     bpy.context.view_layer.objects.active = original_obj
 
-    # Optimize Cycles settings for faster baking
-    bpy.context.scene.cycles.device = 'GPU'
-    bpy.context.scene.cycles.use_denoising = False  # Disable denoising during bake
-    bpy.context.scene.cycles.samples = 256  # Reduced from 2048
-    bpy.context.scene.cycles.diffuse_bounces = 1  # Reduced from 4
-    bpy.context.scene.cycles.caustics_reflective = False
-    bpy.context.scene.cycles.caustics_refractive = False
-    bpy.context.scene.cycles.use_fast_gi = True  # Enable fast GI approximation
-    bpy.context.scene.cycles.ao_bounces = 1
-    
-    # Optimize render settings
-    bpy.context.scene.render.bake.margin = 4  # Reduced from 16
-    bpy.context.scene.render.bake.use_clear = False  # Don't clear images before baking
-    bpy.context.scene.render.use_persistent_data = True  # Keep data between renders
-    
-    # Optimize lighting setup - use fewer lights with higher energy
-    for obj in bpy.data.objects:
-        if obj.type == 'LIGHT':
-            bpy.data.objects.remove(obj, do_unlink=True)
-
-    # Simplified lighting setup with just 3 key lights
-    lights = [
-        ('Top', (0, 0, -3.14159), 8.0),
-        ('Front', (1.5708, 0, 0), 6.0),
-        ('Side', (0, -1.5708, 0), 6.0)
-    ]
-
-    for name, rotation, energy in lights:
-        light_data = bpy.data.lights.new(name=name, type='SUN')
-        light_data.energy = energy
-        light_data.angle = 90.0  # Wider angle for better coverage
-        light_object = bpy.data.objects.new(name=name, object_data=light_data)
-        bpy.context.scene.collection.objects.link(light_object)
-        light_object.rotation_euler = rotation
-
-    # Optimize world lighting
-    bpy.context.scene.world.use_nodes = True
-    world_nodes = bpy.context.scene.world.node_tree.nodes
-    world_nodes["Background"].inputs["Strength"].default_value = 1.0  # Reduced from 2.0
-    world_nodes["Background"].inputs["Color"].default_value = (0.8, 0.8, 0.8, 1)  # Slightly darker
-
     def get_save_path(filename):
         possible_paths = [
             bpy.path.abspath("//"),
@@ -378,7 +630,7 @@ def unwrap_and_bake_selected(obj, master_folder):
     if preserve_faces:
         log_progress("Starting preserved UV bake...", 1)
         # Initialize black pixels for preserved image - match the actual image size
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (2048 * 2048)  # Updated size
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Updated size
         bake_image_preserved.pixels.foreach_set(black_pixels)
         for poly in original_obj.data.polygons:
             poly.select = poly.index in preserve_faces
@@ -388,7 +640,7 @@ def unwrap_and_bake_selected(obj, master_folder):
 
     log_progress("Starting main texture bake...", 1)
     # Initialize black pixels for main image - match the actual image size
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (2048 * 2048)  # Updated size
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Updated size
     bake_image_main.pixels.foreach_set(black_pixels)
     for poly in original_obj.data.polygons:
         poly.select = poly.index not in preserve_faces
@@ -396,15 +648,31 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.ops.object.bake(type='DIFFUSE')
     log_progress("Main bake completed", 2)
     
-    main_path = os.path.join(export_folder, f"{original_obj.name}_bake_main.png")
+    # Save with proper formatting for both texture and xmodel
+    safe_name = original_obj.name.replace('.', '_').lower()
+    main_path = os.path.join(export_folder, f"{safe_name}_bake_main.png")
+    xmodel_path = os.path.join(export_folder, f"{safe_name}.xmodel_bin")
+    
     try:
         log_progress("Saving main texture...", 1)
         bake_image_main.save_render(filepath=main_path)
         log_progress(f"Main texture saved to: {main_path}", 1)
+        
+        # Get parent folder structure for GDT paths
+        parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(main_path))))
+        sub_folder = os.path.basename(os.path.dirname(os.path.dirname(main_path)))
+        curr_folder = os.path.basename(os.path.dirname(main_path))
+        
+        # Create relative texture path for GDT
+        rel_texture = f"{parent_folder}\\{sub_folder}\\{curr_folder}\\{safe_name}_bake_main.png"
+        
+        # Register the image and material with the GDT builder
+        gdt_builder.add_image(safe_name, rel_texture)
+        gdt_builder.add_material(f"{safe_name}_m", safe_name)
+        
     except Exception as e:
         log_progress(f"Error saving main texture: {e}", 1)
 
-    xmodel_path = os.path.join(export_folder, f"{original_obj.name}_baked.XMODEL_BIN")
     try:
         if export_to_xmodel(xmodel_path, original_obj):
             print(f"XMODEL_BIN file saved to: {xmodel_path}")
@@ -412,12 +680,7 @@ def unwrap_and_bake_selected(obj, master_folder):
             print("Failed to export XMODEL_BIN file")
     except Exception as e:
         print(f"Error saving XMODEL_BIN file: {e}")
-
-    # After baking is complete, remove the lights
-    for obj in bpy.data.objects:
-        if obj.type == 'LIGHT':
-            bpy.data.objects.remove(obj, do_unlink=True)
-
+        
 def verify_and_split_if_needed(obj):
     MAX_SAFE_VERTICES = 12000  # Even more conservative for OSRS terrain
     ABSOLUTE_MAX = 60000  # Far below 65534 for safety margin
@@ -768,6 +1031,14 @@ def split_and_bake():
     if obj_name is None:
         print("No object selected or object is not a mesh.")
         return
+        
+    # Create master folder for all objects
+    master_folder_name = f"{obj_name}_baked"
+    master_folder = create_master_export_folder(master_folder_name)
+    
+    if not master_folder:
+        print("Could not create master export folder!")
+        return
     
     # Remove secondary baking since chunks were already baked
     if new_objects:
@@ -814,6 +1085,10 @@ def split_and_bake():
             bpy.data.meshes.remove(mesh_data, do_unlink=True)
             
             bpy.context.view_layer.update()
+
+    # After all processing is complete, save consolidated GDT
+    if master_folder:
+        save_consolidated_gdt(master_folder, obj_name)
 
     print_header("OPERATION COMPLETED")
     end_time = datetime.now()  # Track end time
