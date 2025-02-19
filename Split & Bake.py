@@ -144,6 +144,7 @@ class GDTBuilder:
         self.images = []
         self.materials = []
         self.models = []
+        self.submodels = []  # Add this line
         
     def add_image(self, name, rel_path):
         self.images.append({
@@ -161,6 +162,15 @@ class GDTBuilder:
         # Convert forward slashes to double backslashes
         rel_path = rel_path.replace('/', '\\\\').replace('\\', '\\\\')
         self.models.append({
+            'name': name,
+            'path': rel_path,
+            'material': material_name
+        })
+        
+    def add_submodel(self, parent_name, name, rel_path, material_name):
+        rel_path = rel_path.replace('/', '\\\\').replace('\\', '\\\\')
+        self.submodels.append({
+            'parent': parent_name,
             'name': name,
             'path': rel_path,
             'material': material_name
@@ -271,93 +281,53 @@ class GDTBuilder:
     }}\n\n'''
 
         for model in self.models:
-            gdt_content += f'''    "{model['name']}" ( "xmodel.gdf" )
-    {{
-        "arabicUnsafe" "0"
-        "autogenLod4" "0"
-        "autogenLod4Percent" "13"
-        "autogenLod5" "0"
-        "autogenLod5Percent" "13"
-        "autogenLod6" "0"
-        "autogenLod6Percent" "13"
-        "autogenLod7" "0"
-        "autogenLod7Percent" "13"
-        "autogenLowestLod" "0"
-        "autogenLowestLodPercent" "13"
-        "autogenLowLod" "0"
-        "autogenLowLodPercent" "25"
-        "autogenMediumLod" "0"
-        "autogenMediumLodPercent" "50"
-        "boneControllers" ""
-        "boneStabilizers" ""
-        "BulletCollisionFile" ""
-        "BulletCollisionLOD" "High"
-        "BulletCollisionRigid" "0"
-        "CollisionMap" ""
-        "cullOutDiameter" "0"
-        "cullOutOffsetCP" "1"
-        "cullOutOffsetMP" "1"
-        "customAutogenParams" "0"
-        "DetailShadows" "0"
-        "doNotUse" "0"
-        "dropLOD" "Auto"
-        "filename" "{model['path']}"
-        "forceLod4Rigid" "0"
-        "forceLod5Rigid" "0"
-        "forceLod6Rigid" "0"
-        "forceLod7Rigid" "0"
-        "forceLowestLodRigid" "0"
-        "forceLowLodRigid" "0"
-        "forceMediumLodRigid" "0"
-        "forceResident" "0"
-        "fp32" "0"
-        "germanUnsafe" "0"
-        "heroAsset" "0"
-        "heroLighting" "0"
-        "highLodDist" "0"
-        "hitBoxModel" ""
-        "isSiege" "0"
-        "japaneseUnsafe" "0"
-        "LodColorPriority" "0.008"
-        "lodNormalPriority" "1.54"
-        "lodPositionPriority" "12"
-        "lodPresets" "performance"
-        "LodUvPriority" "3.5"
-        "noCastShadow" "0"
-        "noOutdoorOcclude" "0"
-        "notInEditor" "0"
-        "physicsConstraints" ""
-        "physicsPreset" ""
-        "preserveOriginalUVs" "0"
-        "scale" "10.0"
-        "scaleCollMap" "0"
-        "ShadowLOD" "Auto"
-        "skinOverride" "rs_untextured {model['material']}\\r\\n"
-        "type" "animated"
-        "usage_attachment" "0"
-        "usage_hero" "0"
-        "usage_view" "0"
-        "usage_weapon" "0"
-        "usage_zombie_body" "1"
-        "usage_zombie_world_prop" "0"
-    }}\n\n'''
+            gdt_content += self._build_model_entry(model)
+            # Find and add submodels for this model
+            submodels = [s for s in self.submodels if s['parent'] == model['name']]
+            for submodel in submodels:
+                gdt_content += self._build_submodel_entry(submodel)
 
         gdt_content += "}"
         return gdt_content
+    
+    def _build_model_entry(self, model):
+        model_entry = f'''    "{model['name']}" ( "xmodel.gdf" )
+    {{
+        "filename" "{model['path']}"
+        "type" "animated"
+        "usage_zombie_body" "1"
+        "scale" "10.0"
+        "skinOverride" "rs_untextured {model['material']}\\r\\n"
+        "submodel0_Name" "{model['name']}_f"
+    }}\n\n'''
+        return model_entry
+    
+    def _build_submodel_entry(self, submodel):
+        return f'''    "{submodel['name']}" ( "xmodel.gdf" )
+    {{
+        "filename" "{submodel['path']}"
+        "type" "animated"
+        "usage_zombie_body" "1"
+        "scale" "10.0"
+        "skinOverride" "rs_untextured {submodel['material']}\\r\\n"
+    }}\n\n'''
 
 gdt_builder = GDTBuilder()
 
-def export_to_xmodel(filepath, obj):
+def export_to_xmodel(filepath, obj, create_extruded=False):
     vert_count = len(obj.data.vertices)
     if vert_count > 65534:
         print(f"EMERGENCY: {obj.name} has {vert_count} vertices - performing last-minute split")
         verify_and_split_if_needed(obj)
         return False
-    
+
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
+
+    # Store original mesh data
+    original_mesh = obj.data.copy()
     
     for mod in obj.modifiers:
         try:
@@ -365,55 +335,75 @@ def export_to_xmodel(filepath, obj):
         except:
             print(f"Couldn't apply {mod.name}, removing instead")
             obj.modifiers.remove(mod)
-    
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.mesh.quads_convert_to_tris()
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    export_dir = os.path.dirname(filepath)
-    os.makedirs(export_dir, exist_ok=True)
-    
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
+
+    # Export normal version first
+    log_progress("Exporting normal model...", 1)
+    safe_name = obj.name.replace('.', '_').lower()
+    xmodel_filename = f"{safe_name}.xmodel_bin"
+    extruded_filename = f"{safe_name}_f.xmodel_bin" if create_extruded else None
+    xmodel_dir = os.path.dirname(filepath)
+    filepath_normal = os.path.join(xmodel_dir, xmodel_filename)
     
     try:
-        safe_name = obj.name.replace('.', '_').lower()
-        xmodel_filename = f"{safe_name}.xmodel_bin"
-        xmodel_dir = os.path.dirname(filepath)
-        filepath = os.path.join(xmodel_dir, xmodel_filename)
-        
         result = bpy.ops.export_scene.xmodel(
-            filepath=filepath,
+            filepath=filepath_normal,
             check_existing=True,
             target_format='XMODEL_BIN',
             version='7',
-            use_selection=True,
-            apply_unit_scale=True,
-            use_vertex_colors=True,
-            use_vertex_cleanup=True,
-            apply_modifiers=True,
-            modifier_quality='PREVIEW',
-            use_armature=True,
-            use_weight_min=True,
-            use_weight_min_threshold=0.001
+            use_selection=True
         )
         
         if result == {'FINISHED'}:
-            parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(filepath))))
-            sub_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
-            curr_folder = os.path.basename(os.path.dirname(filepath))
+            log_progress(f"Normal model exported successfully: {xmodel_filename}", 2)
+            parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(filepath_normal))))
+            sub_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath_normal)))
+            curr_folder = os.path.basename(os.path.dirname(filepath_normal))
             
             rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
             rel_xmodel = os.path.join("..", parent_folder, sub_folder, curr_folder, xmodel_filename).replace('/', '\\')
             
+            # Add normal version
             gdt_builder.add_model(safe_name, rel_xmodel, f"{safe_name}_m")
+            
+            if create_extruded:
+                log_progress("Creating flipped version...", 1)
+                # Restore original mesh
+                obj.data = original_mesh.copy()
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.mesh.flip_normals()
+                bpy.ops.object.mode_set(mode='OBJECT')
+                
+                # Export flipped version
+                filepath_extruded = os.path.join(xmodel_dir, extruded_filename)
+                log_progress(f"Exporting flipped model: {extruded_filename}", 2)
+                
+                result = bpy.ops.export_scene.xmodel(
+                    filepath=filepath_extruded,
+                    check_existing=True,
+                    target_format='XMODEL_BIN',
+                    version='7',
+                    use_selection=True
+                )
+                
+                if result == {'FINISHED'}:
+                    log_progress("Flipped model exported successfully", 2)
+                    rel_xmodel_extruded = os.path.join("..", parent_folder, sub_folder, curr_folder, extruded_filename).replace('/', '\\')
+                    # Add flipped version as submodel
+                    gdt_builder.add_submodel(safe_name, f"{safe_name}_f", rel_xmodel_extruded, f"{safe_name}_m")
+                else:
+                    log_progress("Failed to export extruded model", 2)
+            
             return True
         return False
+        
     except Exception as e:
         print(f"Export error: {str(e)}")
         return False
+    finally:
+        if original_mesh:
+            obj.data = original_mesh
+            log_progress("Restored original mesh data", 1)
 
 def save_consolidated_gdt(master_folder, base_name):
     blend_file_path = bpy.data.filepath
@@ -504,7 +494,7 @@ def unwrap_and_bake_selected(obj, master_folder):
 
     def create_black_image(name, width, height):
         img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
+        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)  # Correct pixel array size calculation
         img.pixels.foreach_set(pixels)
         return img
 
@@ -644,7 +634,7 @@ def unwrap_and_bake_selected(obj, master_folder):
     print_subheader("BAKING TEXTURES")
     if preserve_faces:
         log_progress("Starting preserved UV bake...", 1)
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)  # Correct pixel array size calculation
         bake_image_preserved.pixels.foreach_set(black_pixels)
 
         bpy.ops.object.mode_set(mode='EDIT')
@@ -658,7 +648,7 @@ def unwrap_and_bake_selected(obj, master_folder):
         log_progress("Preserved bake completed", 2)
 
     log_progress("Starting main texture bake...", 1)
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Correct pixel array size calculation
     bake_image_main.pixels.foreach_set(black_pixels)
 
     bpy.ops.object.mode_set(mode='EDIT')
@@ -693,12 +683,12 @@ def unwrap_and_bake_selected(obj, master_folder):
         log_progress(f"Error saving main texture: {e}", 1)
 
     try:
-        if export_to_xmodel(xmodel_path, original_obj):
-            print(f"XMODEL_BIN file saved to: {xmodel_path}")
+        if export_to_xmodel(xmodel_path, original_obj, create_extruded=True):
+            print(f"XMODEL_BIN files saved to: {xmodel_path}")
         else:
-            print("Failed to export XMODEL_BIN file")
+            print("Failed to export XMODEL_BIN files")
     except Exception as e:
-        print(f"Error saving XMODEL_BIN file: {e}")
+        print(f"Error saving XMODEL_BIN files: {e}")
         
 def verify_and_split_if_needed(obj):
     MAX_SAFE_VERTICES = 12000
