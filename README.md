@@ -11,13 +11,13 @@ This application takes GLTF files from [OSRS Enviroment Exporter](https://github
 
 ## Usage
 
-1. export model from OSRS
+1. export model from [OSRS](https://github.com/ConnorDY/OSRS-Environment-Exporter)
 2. open gltf in Blender
 3. Select all meshs you want and highlight the top one then press "ctrl + J" to join meshs into one
 4. save the blender file in Bo3 Root/*New Folder*
 5. rename mesh to what you would like the models to be called
 6. select your mesh and run script
-7. After the script completes your models should be in APE
+7. After the script completes your models should be in APE (no noeed to place "_f" versions in your map they are linked as submodel)
 
 
 
