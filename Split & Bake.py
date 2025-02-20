@@ -144,7 +144,7 @@ class GDTBuilder:
         self.images = []
         self.materials = []
         self.models = []
-        self.submodels = []  # Add this line
+        self.submodels = []
         
     def add_image(self, name, rel_path):
         self.images.append({
@@ -159,7 +159,6 @@ class GDTBuilder:
         })
         
     def add_model(self, name, rel_path, material_name):
-        # Convert forward slashes to double backslashes
         rel_path = rel_path.replace('/', '\\\\').replace('\\', '\\\\')
         self.models.append({
             'name': name,
@@ -282,7 +281,6 @@ class GDTBuilder:
 
         for model in self.models:
             gdt_content += self._build_model_entry(model)
-            # Find and add submodels for this model
             submodels = [s for s in self.submodels if s['parent'] == model['name']]
             for submodel in submodels:
                 gdt_content += self._build_submodel_entry(submodel)
@@ -329,8 +327,6 @@ class GDTBuilder:
         "forceLowestLodRigid" "0"
         "forceLowLodRigid" "0"
         "forceMediumLodRigid" "0"
-        "forceResident" "0"
-        "fp32" "0"
         "germanUnsafe" "0"
         "heroAsset" "0"
         "heroLighting" "0"
@@ -377,11 +373,9 @@ class GDTBuilder:
 gdt_builder = GDTBuilder()
 
 def apply_material_based_offset(obj):
-    """Apply Z offsets to faces to prevent Z-fighting in BO3"""
     if not obj or obj.type != 'MESH':
         return
         
-    # Get materials and their properties
     materials = obj.material_slots
     mat_properties = {}
     
@@ -392,53 +386,43 @@ def apply_material_based_offset(obj):
                 'transparent': is_transparent,
                 'priority': 0
             }
-            # Transparent materials get higher priority
             if is_transparent:
                 mat_properties[i]['priority'] = 2
     
-    # Calculate base offset (larger for BO3 to prevent Z-fighting)
-    BASE_OFFSET = 0.005  # 5x larger than previous version
+    BASE_OFFSET = 0.005
     
-    # Track processed vertices to handle shared vertices
     processed_verts = {}
     
-    # First pass: Apply material-based offsets
     for poly in obj.data.polygons:
         mat_index = poly.material_index
         mat_priority = mat_properties.get(mat_index, {}).get('priority', 0)
         
-        # Calculate offset based on material index and priority
         offset = BASE_OFFSET * (mat_index + 1) + (BASE_OFFSET * 2 * mat_priority)
         
-        # Add facing direction bias
-        if poly.normal.z > 0:  # Facing up
+        if poly.normal.z > 0:
             offset += BASE_OFFSET * 0.5
-        elif poly.normal.z < 0:  # Facing down
+        elif poly.normal.z < 0:
             offset -= BASE_OFFSET * 0.5
             
-        # Apply offset to vertices
         for vert_idx in poly.vertices:
             if vert_idx not in processed_verts:
                 processed_verts[vert_idx] = []
             processed_verts[vert_idx].append(offset)
     
-    # Second pass: Average offsets for shared vertices
     for vert_idx, offsets in processed_verts.items():
         avg_offset = sum(offsets) / len(offsets)
         obj.data.vertices[vert_idx].co.z += avg_offset
     
-    # Final pass: Create backfaces for transparent materials
     for poly in obj.data.polygons:
         mat_index = poly.material_index
         if mat_properties.get(mat_index, {}).get('transparent', False):
-            # Add a small back-face offset for transparent materials
             backface_offset = -BASE_OFFSET * 0.1
             for vert_idx in poly.vertices:
                 obj.data.vertices[vert_idx].co += poly.normal * backface_offset
 
 def export_to_xmodel(filepath, obj, create_extruded=False):
     vert_count = len(obj.data.vertices)
-    if vert_count > 65534:
+    if (vert_count > 65534):
         print(f"EMERGENCY: {obj.name} has {vert_count} vertices - performing last-minute split")
         verify_and_split_if_needed(obj)
         return False
@@ -448,7 +432,6 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
 
-    # Store original mesh data and vertex positions
     original_mesh = obj.data.copy()
     original_positions = [(v.co.x, v.co.y, v.co.z) for v in obj.data.vertices]
     
@@ -459,14 +442,11 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
             print(f"Couldn't apply {mod.name}, removing instead")
             obj.modifiers.remove(mod)
 
-    # Apply a small offset to the normal version to prevent Z-fighting
     for vertex in obj.data.vertices:
-        vertex.co.z += 0.001  # Small Z offset
+        vertex.co.z += 0.001
 
-    # Apply material-based offset to prevent Z-fighting
     apply_material_based_offset(obj)
 
-    # Export normal version first
     log_progress("Exporting normal model...", 1)
     safe_name = obj.name.replace('.', '_').lower()
     xmodel_filename = f"{safe_name}.xmodel_bin"
@@ -492,19 +472,16 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
             rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
             rel_xmodel = os.path.join("..", parent_folder, sub_folder, curr_folder, xmodel_filename).replace('/', '\\')
             
-            # Add normal version
             gdt_builder.add_model(safe_name, rel_xmodel, f"{safe_name}_m")
             
             if create_extruded:
                 log_progress("Creating flipped version...", 1)
-                # Restore original mesh
                 obj.data = original_mesh.copy()
                 bpy.ops.object.mode_set(mode='EDIT')
                 bpy.ops.mesh.select_all(action='SELECT')
                 bpy.ops.mesh.flip_normals()
                 bpy.ops.object.mode_set(mode='OBJECT')
                 
-                # Export flipped version
                 filepath_extruded = os.path.join(xmodel_dir, extruded_filename)
                 log_progress(f"Exporting flipped model: {extruded_filename}", 2)
                 
@@ -519,7 +496,6 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
                 if result == {'FINISHED'}:
                     log_progress("Flipped model exported successfully", 2)
                     rel_xmodel_extruded = os.path.join("..", parent_folder, sub_folder, curr_folder, extruded_filename).replace('/', '\\')
-                    # Add flipped version as submodel
                     gdt_builder.add_submodel(safe_name, f"{safe_name}_f", rel_xmodel_extruded, f"{safe_name}_m")
                 else:
                     log_progress("Failed to export extruded model", 2)
@@ -532,7 +508,6 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
         return False
     finally:
         if original_mesh:
-            # Restore original vertex positions
             obj.data = original_mesh
             for i, pos in enumerate(original_positions):
                 obj.data.vertices[i].co = Vector(pos)
@@ -597,7 +572,6 @@ def unwrap_and_bake_selected(obj, master_folder):
     bpy.ops.mesh.mark_seam(clear=True)
     bpy.ops.mesh.mark_sharp(clear=True)
     
-    # Select only non-preserved faces for unwrapping
     bpy.ops.object.mode_set(mode='OBJECT')
     for poly in original_obj.data.polygons:
         poly.select = poly.index not in preserve_faces
@@ -627,7 +601,7 @@ def unwrap_and_bake_selected(obj, master_folder):
 
     def create_black_image(name, width, height):
         img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)  # Correct pixel array size calculation
+        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height * 4)
         img.pixels.foreach_set(pixels)
         return img
 
@@ -767,7 +741,7 @@ def unwrap_and_bake_selected(obj, master_folder):
     print_subheader("BAKING TEXTURES")
     if preserve_faces:
         log_progress("Starting preserved UV bake...", 1)
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)  # Correct pixel array size calculation
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
         bake_image_preserved.pixels.foreach_set(black_pixels)
 
         bpy.ops.object.mode_set(mode='EDIT')
@@ -781,7 +755,7 @@ def unwrap_and_bake_selected(obj, master_folder):
         log_progress("Preserved bake completed", 2)
 
     log_progress("Starting main texture bake...", 1)
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)  # Correct pixel array size calculation
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
     bake_image_main.pixels.foreach_set(black_pixels)
 
     bpy.ops.object.mode_set(mode='EDIT')
@@ -913,7 +887,7 @@ def verify_and_split_if_needed(obj):
     print(f"Checking {obj.name}: {vert_count} vertices")
     
     if vert_count > ABSOLUTE_MAX:
-        print(f"CRITICAL: {obj.name} exceeds vertex limit")
+        print(f"CRITICAL: {obj.name exceeds vertex limit")
         perform_emergency_split(obj)
         return True
     
