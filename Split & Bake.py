@@ -376,6 +376,66 @@ class GDTBuilder:
 
 gdt_builder = GDTBuilder()
 
+def apply_material_based_offset(obj):
+    """Apply Z offsets to faces to prevent Z-fighting in BO3"""
+    if not obj or obj.type != 'MESH':
+        return
+        
+    # Get materials and their properties
+    materials = obj.material_slots
+    mat_properties = {}
+    
+    for i, mat_slot in enumerate(materials):
+        if mat_slot.material:
+            is_transparent = material_has_transparency(mat_slot.material)
+            mat_properties[i] = {
+                'transparent': is_transparent,
+                'priority': 0
+            }
+            # Transparent materials get higher priority
+            if is_transparent:
+                mat_properties[i]['priority'] = 2
+    
+    # Calculate base offset (larger for BO3 to prevent Z-fighting)
+    BASE_OFFSET = 0.005  # 5x larger than previous version
+    
+    # Track processed vertices to handle shared vertices
+    processed_verts = {}
+    
+    # First pass: Apply material-based offsets
+    for poly in obj.data.polygons:
+        mat_index = poly.material_index
+        mat_priority = mat_properties.get(mat_index, {}).get('priority', 0)
+        
+        # Calculate offset based on material index and priority
+        offset = BASE_OFFSET * (mat_index + 1) + (BASE_OFFSET * 2 * mat_priority)
+        
+        # Add facing direction bias
+        if poly.normal.z > 0:  # Facing up
+            offset += BASE_OFFSET * 0.5
+        elif poly.normal.z < 0:  # Facing down
+            offset -= BASE_OFFSET * 0.5
+            
+        # Apply offset to vertices
+        for vert_idx in poly.vertices:
+            if vert_idx not in processed_verts:
+                processed_verts[vert_idx] = []
+            processed_verts[vert_idx].append(offset)
+    
+    # Second pass: Average offsets for shared vertices
+    for vert_idx, offsets in processed_verts.items():
+        avg_offset = sum(offsets) / len(offsets)
+        obj.data.vertices[vert_idx].co.z += avg_offset
+    
+    # Final pass: Create backfaces for transparent materials
+    for poly in obj.data.polygons:
+        mat_index = poly.material_index
+        if mat_properties.get(mat_index, {}).get('transparent', False):
+            # Add a small back-face offset for transparent materials
+            backface_offset = -BASE_OFFSET * 0.1
+            for vert_idx in poly.vertices:
+                obj.data.vertices[vert_idx].co += poly.normal * backface_offset
+
 def export_to_xmodel(filepath, obj, create_extruded=False):
     vert_count = len(obj.data.vertices)
     if vert_count > 65534:
@@ -388,8 +448,9 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
 
-    # Store original mesh data
+    # Store original mesh data and vertex positions
     original_mesh = obj.data.copy()
+    original_positions = [(v.co.x, v.co.y, v.co.z) for v in obj.data.vertices]
     
     for mod in obj.modifiers:
         try:
@@ -397,6 +458,13 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
         except:
             print(f"Couldn't apply {mod.name}, removing instead")
             obj.modifiers.remove(mod)
+
+    # Apply a small offset to the normal version to prevent Z-fighting
+    for vertex in obj.data.vertices:
+        vertex.co.z += 0.001  # Small Z offset
+
+    # Apply material-based offset to prevent Z-fighting
+    apply_material_based_offset(obj)
 
     # Export normal version first
     log_progress("Exporting normal model...", 1)
@@ -464,7 +532,10 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
         return False
     finally:
         if original_mesh:
+            # Restore original vertex positions
             obj.data = original_mesh
+            for i, pos in enumerate(original_positions):
+                obj.data.vertices[i].co = Vector(pos)
             log_progress("Restored original mesh data", 1)
 
 def save_consolidated_gdt(master_folder, base_name):
@@ -563,8 +634,8 @@ def unwrap_and_bake_selected(obj, master_folder):
     safe_name = original_obj.name.replace('.', '_').lower()
     bake_image_main = create_black_image(
         name=f"{safe_name}_bake_main",
-        width=1024,
-        height=1024
+        width=512,
+        height=512
     )
     
     bake_image_preserved = create_black_image(
@@ -710,7 +781,7 @@ def unwrap_and_bake_selected(obj, master_folder):
         log_progress("Preserved bake completed", 2)
 
     log_progress("Starting main texture bake...", 1)
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)  # Correct pixel array size calculation
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)  # Correct pixel array size calculation
     bake_image_main.pixels.foreach_set(black_pixels)
 
     bpy.ops.object.mode_set(mode='EDIT')
