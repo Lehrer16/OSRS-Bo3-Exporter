@@ -887,7 +887,7 @@ def verify_and_split_if_needed(obj):
     print(f"Checking {obj.name}: {vert_count} vertices")
     
     if vert_count > ABSOLUTE_MAX:
-        print(f"CRITICAL: {obj.name exceeds vertex limit")
+        print(f"CRITICAL: {obj.name} exceeds vertex limit")
         perform_emergency_split(obj)
         return True
     
