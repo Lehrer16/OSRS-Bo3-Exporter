@@ -601,15 +601,15 @@ def unwrap_and_bake_selected(obj, master_folder):
 
     def create_black_image(name, width, height):
         img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height * 4)
+        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
         img.pixels.foreach_set(pixels)
         return img
 
     safe_name = original_obj.name.replace('.', '_').lower()
     bake_image_main = create_black_image(
         name=f"{safe_name}_bake_main",
-        width=512,
-        height=512
+        width=1024,
+        height=1024
     )
     
     bake_image_preserved = create_black_image(
@@ -755,7 +755,7 @@ def unwrap_and_bake_selected(obj, master_folder):
         log_progress("Preserved bake completed", 2)
 
     log_progress("Starting main texture bake...", 1)
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
+    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)
     bake_image_main.pixels.foreach_set(black_pixels)
 
     bpy.ops.object.mode_set(mode='EDIT')
