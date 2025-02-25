@@ -5,6 +5,8 @@ from mathutils import Vector
 import tempfile
 from datetime import datetime
 from mathutils import kdtree
+from math import radians
+import bmesh
 
 def print_header(title):
     print(f"\n-- {datetime.now().strftime('%H:%M:%S')} :: {title} --\n")
@@ -64,72 +66,6 @@ def create_export_folder(master_folder, obj_name):
     export_folder = os.path.join(master_folder, f"{obj_name.replace('.', '_')}_bake")
     os.makedirs(export_folder, exist_ok=True)
     return export_folder
-
-def create_gdt_content(filepath, obj_name):
-    parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(filepath))))
-    sub_folder = os.path.basename(os.path.dirname(os.path.dirname(filepath)))
-    curr_folder = os.path.basename(os.path.dirname(filepath))
-    
-    rel_xmodel = os.path.join("..", parent_folder, sub_folder, curr_folder, f"{obj_name.replace('.', '_').lower()}.xmodel_bin").replace('/', '\\')
-    rel_texture = os.path.join(parent_folder, sub_folder, curr_folder, f"{obj_name.replace('.', '_').lower()}_bake_main.png").replace('/', '\\')
-
-    gdt_name = obj_name.replace('.', '_')
-
-    gdt_content = "{\n"
-    
-    gdt_content += f'''    "i_{safe_name}" ( "image.gdf" )
-    {{
-        "arabicUnsafe" "0"
-        "baseImage" "{rel_texture}"
-        "clampU" "0"
-        "clampV" "0"
-        "colorSRGB" "0"
-        "compressionMethod" "compressed high color"
-        "coreSemantic" "sRGB3chAlpha"
-        "doNotResize" "0"
-        "forceStreaming" "0"
-        "germanUnsafe" "0"
-        "imageType" "Texture"
-        "japaneseUnsafe" "0"
-        "mipBase" "1/1"
-        "semantic" "diffuseMap"
-        "streamable" "1"
-        "type" "image"
-    }}
-
-'''
-
-    gdt_content += f'''    "{safe_name}_m" ( "material.gdf" )
-    {{
-        "colorMap" "i_{safe_name}"
-        "materialType" "lit_advanced_fullspec"
-        "surfaceType" "default"
-        "template" "material.template"
-        "glossSurfaceType" "paint"
-        "specAmount" "1"
-        "specColorTint" "0.760757 0.764664 0.764664 1"
-        "glossRangeMax" "7.0"
-        "glossRangeMin" "2.0"
-        "materialCategory" "Geometry Advanced"
-        "gSpecLobeAWeight" "0.375" 
-        "gSpecLobeRoughnessA" "0.05"
-        "gSpecLobeRoughnessB" "0.1875"
-        "gSpecIndexOfRefraction" "1.333"
-    }}
-
-'''
-
-    gdt_content += f'''    "{safe_name}" ( "xmodel.gdf" )
-    {{
-        "filename" "{rel_xmodel}"
-        "type" "animated"
-        "usage_zombie_body" "1"
-        "scale" "10.0"
-        "skinOverride" "rs_untextured {safe_name}_m\\r\\n"
-    }}'''
-
-    gdt_content += "\n}"
-    return gdt_content
 
 def save_gdt_file(filepath, content):
     try:
@@ -530,272 +466,381 @@ def save_consolidated_gdt(master_folder, base_name):
     save_gdt_file(gdt_filepath, gdt_content)
     print(f"GDT file saved to: {gdt_filepath}")
 
-def create_blank_image(name, width, height):
+def detect_and_mark_seams(obj):
+
+    
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.edges.ensure_lookup_table()
+    
+    for edge in bm.edges:
+        edge.seam = False
+    
+    angle_threshold = radians(60)
+    for edge in bm.edges:
+        if len(edge.link_faces) == 2:
+            angle = edge.calc_face_angle()
+            if angle and angle > angle_threshold:
+                edge.seam = True
+                edge.select = True
+        elif len(edge.link_faces) == 1: 
+            edge.seam = True
+            edge.select = True
+    
+    bmesh.update_edit_mesh(obj.data)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.mode_set(mode='EDIT')
+    
+    return True
+
+def unwrap_with_fallback(obj):
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    
+    detect_and_mark_seams(obj)
+    bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.001)
+    
+    failed_faces = []
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for face in obj.data.polygons:
+        uv_area = 0
+        for loop_idx in face.loop_indices:
+            uv = obj.data.uv_layers.active.data[loop_idx].uv
+            uv_area += abs(uv.x + uv.y)
+        if uv_area < 0.00001:  
+            failed_faces.append(face.index)
+    
+    if failed_faces:
+        log_progress(f"First unwrap attempt had {len(failed_faces)} failed faces, trying smart UV project...", 2)
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        
+       
+        bpy.ops.uv.smart_project(
+            angle_limit=66,
+            island_margin=0.02,
+            area_weight=1.0,
+            correct_aspect=True,
+            scale_to_bounds=False
+        )
+        
+      
+        bpy.ops.object.mode_set(mode='OBJECT')
+        final_failed = 0
+        for face_idx in failed_faces:
+            face = obj.data.polygons[face_idx]
+            uv_area = 0
+            for loop_idx in face.loop_indices:
+                uv = obj.data.uv_layers.active.data[loop_idx].uv
+                uv_area += abs(uv.x + uv.y)
+            if uv_area < 0.00001:
+                final_failed += 1
+        
+        if final_failed > 0:
+            log_progress(f"Warning: {final_failed} faces still have problematic UVs", 2)
+        else:
+            log_progress("All UV issues resolved with smart UV project", 2)
+    
+    bpy.ops.object.mode_set(mode='EDIT')
+    return True
+
+def hide_other_meshes(active_obj):
+    """Hide all mesh objects except the active one."""
+    hidden_states = {}
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'MESH' and obj != active_obj:
+            hidden_states[obj] = obj.hide_viewport
+            obj.hide_viewport = True
+            obj.hide_render = True
+    return hidden_states
+
+def restore_mesh_visibility(hidden_states):
+    """Restore previous visibility states of meshes."""
+    for obj, was_hidden in hidden_states.items():
+        if obj:
+            obj.hide_viewport = was_hidden
+            obj.hide_render = was_hidden
+
+def create_black_image(name, width, height):
     img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-    pixels = [0.0] * (width * height * 4)
-    img.pixels = pixels
+    pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
+    img.pixels.foreach_set(pixels)
     return img
 
-def unwrap_and_bake_selected(obj, master_folder):
+def unwrap_and_bake_selected(obj, master_folder, resolution=512):
     print_header("STARTING BAKE PROCESS")
     log_progress(f"Baking object: {obj.name}")
     original_obj = obj
     
-    if original_obj is None or original_obj.type != 'MESH':
-        log_progress("Error: Please select a mesh object")
-        return
-
-    export_folder = create_export_folder(master_folder, original_obj.name)
-    if not export_folder:
-        log_progress("Error: Could not create export folder!")
-        return
-    log_progress(f"Created export folder: {export_folder}")
-
-    preserve_faces = set()
+    hidden_states = hide_other_meshes(original_obj)
     
-    for poly in original_obj.data.polygons:
-        if poly.material_index < len(original_obj.material_slots):
-            mat = original_obj.material_slots[poly.material_index].material
-            if should_preserve_uv(original_obj, mat):
-                preserve_faces.add(poly.index)
-
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='SELECT')
-    
-    if len(obj.data.polygons) == 0:
-        log_progress("Error: Object has no faces to unwrap")
-        return
-        
-    bpy.context.tool_settings.mesh_select_mode = (False, False, True)
-    
-    bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.mesh.mark_seam(clear=True)
-    bpy.ops.mesh.mark_sharp(clear=True)
-    
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for poly in original_obj.data.polygons:
-        poly.select = poly.index not in preserve_faces
-    bpy.ops.object.mode_set(mode='EDIT')
-    
-    log_progress("Starting UV unwrap for non-preserved faces...", 1)
     try:
-        bpy.ops.uv.smart_project(
-            angle_limit=89.0,
-            island_margin=0.001,
-            area_weight=1.0,
-            correct_aspect=True,
-            scale_to_bounds=True
-        )
-        log_progress("UV unwrap completed successfully", 1)
-    except RuntimeError as e:
-        log_progress(f"UV unwrapping failed: {str(e)}", 1)
-        try:
-            log_progress("Trying fallback unwrap method...", 1)
-            bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.001)
-            log_progress("Fallback unwrap successful", 1)
-        except:
-            log_progress("Both UV unwrapping methods failed!", 1)
+        if original_obj is None or original_obj.type != 'MESH':
+            log_progress("Error: Please select a mesh object")
             return
-    
-    bpy.ops.object.mode_set(mode='OBJECT')
 
-    def create_black_image(name, width, height):
-        img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
-        pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
-        img.pixels.foreach_set(pixels)
-        return img
+        export_folder = create_export_folder(master_folder, original_obj.name)
+        if not export_folder:
+            log_progress("Error: Could not create export folder!")
+            return
+        log_progress(f"Created export folder: {export_folder}")
 
-    safe_name = original_obj.name.replace('.', '_').lower()
-    bake_image_main = create_black_image(
-        name=f"{safe_name}_bake_main",
-        width=1024,
-        height=1024
-    )
-    
-    bake_image_preserved = create_black_image(
-        name=f"{safe_name}_bake_preserved",
-        width=512,
-        height=512
-    )
-
-    has_transparency = False
-    for material_slot in original_obj.material_slots:
-        if not material_slot.material:
-            continue
+        preserve_faces = set()
+        
+        faces_by_material = {}
+        for poly in original_obj.data.polygons:
+            mat_index = poly.material_index
+            if mat_index not in faces_by_material:
+                faces_by_material[mat_index] = []
+            faces_by_material[mat_index].append(poly.index)
             
-        material = material_slot.material
-        if material_has_transparency(material):
-            has_transparency = True
-        material.use_nodes = True
-        nodes = material.node_tree.nodes
-        links = material.node_tree.links
-        
-        for node in list(nodes):
-            if node.type == 'TEX_IMAGE' and node.image in [bake_image_main, bake_image_preserved]:
-                nodes.remove(node)
-        
-        is_preserved = should_preserve_uv(original_obj, material)
-        target_image = bake_image_preserved if is_preserved else bake_image_main
-        bake_node = nodes.new('ShaderNodeTexImage')
-        bake_node.image = target_image
-        bake_node.select = True
-        nodes.active = bake_node
-        
-        principled = None
-        for node in nodes:
-            if node.type == 'BSDF_PRINCIPLED':
-                principled = node
-                break
-        
-        if not principled:
-            principled = nodes.new('ShaderNodeBsdfPrincipled')
+            if poly.material_index < len(original_obj.material_slots):
+                mat = original_obj.material_slots[poly.material_index].material
+                if should_preserve_uv(original_obj, mat):
+                    preserve_faces.add(poly.index)
+
+        if len(obj.data.polygons) == 0:
+            log_progress("Error: Object has no faces to unwrap")
+            return
             
-        principled.inputs['Emission Strength'].default_value = 0.5
-
-    for obj in bpy.data.objects:
-        if obj.type == 'LIGHT':
-            bpy.data.objects.remove(obj, do_unlink=True)
-
-    lights = [
-        ('Top', (0, 0, -3.14159)),
-        ('Front', (1.5708, 0, 0)),
-        ('Left', (0, -1.5708, 0)),
-        ('Right', (0, 1.5708, 0)),
-        ('Back', (-1.5708, 0, 0))
-    ]
-
-    for name, rotation in lights:
-        light_data = bpy.data.lights.new(name=name, type='SUN')
-        light_data.energy = 5.0
-        light_data.angle = 180.0
-        light_object = bpy.data.objects.new(name=name, object_data=light_data)
-        bpy.context.scene.collection.objects.link(light_object)
-        light_object.rotation_euler = rotation
-
-    bpy.context.scene.world.use_nodes = True
-    world_nodes = bpy.context.scene.world.node_tree.nodes
-    world_nodes["Background"].inputs["Strength"].default_value = 2.0
-    world_nodes["Background"].inputs["Color"].default_value = (1, 1, 1, 1)
-
-    bpy.context.scene.cycles.diffuse_bounces = 2
-    bpy.context.scene.cycles.caustics_reflective = False
-    bpy.context.scene.cycles.caustics_refractive = False
-
-    cycles_prefs = bpy.context.preferences.addons['cycles'].preferences
-    cycles_prefs.compute_device_type = 'CUDA'
-    cycles_prefs.refresh_devices()
-    
-    for device_type in cycles_prefs.get_devices_for_type('CUDA'):
-        device_type.use = True
-    cycles_prefs.get_devices_for_type('CPU')[0].use = True
-    
-    bpy.context.scene.cycles.device = 'GPU'
-    bpy.context.scene.cycles.use_denoising = True
-    bpy.context.scene.cycles.preview_denoising = True
-    
-    bpy.context.scene.render.engine = 'CYCLES'
-    bpy.context.scene.cycles.samples = 512
-    bpy.context.scene.cycles.diffuse_bounces = 4
-    bpy.context.scene.render.bake.margin = 16
-    bpy.context.scene.render.bake.use_pass_direct = True
-    bpy.context.scene.render.bake.use_pass_indirect = True
-    bpy.context.scene.render.bake.use_selected_to_active = False
-    bpy.context.scene.render.bake.use_clear = True
-    bpy.context.scene.render.bake.target = 'IMAGE_TEXTURES'
-    
-    bpy.context.scene.render.bake.use_cage = True
-    bpy.context.scene.render.bake.cage_extrusion = 0.02
-    
-    bpy.context.scene.cycles.use_adaptive_sampling = False
-    bpy.context.scene.cycles.use_denoising = False
-    
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.uv.pack_islands(margin=0.02, rotate=False)
-    bpy.ops.uv.pin(clear=True)
-    bpy.ops.uv.average_islands_scale()
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    if has_transparency:
-        bake_image_main.alpha_mode = 'NONE'
-        bake_image_preserved.alpha_mode = 'NONE'
-    
-    original_obj.select_set(True)
-    bpy.context.view_layer.objects.active = original_obj
-
-    def get_save_path(filename):
-        possible_paths = [
-            bpy.path.abspath("//"),
-            os.path.join(os.path.expanduser("~"), "Documents"),
-            tempfile.gettempdir(),
-            os.path.dirname(os.path.realpath(__file__))
-        ]
+        bpy.context.tool_settings.mesh_select_mode = (False, False, True)
         
-        for path in possible_paths:
-            if path and os.path.exists(path) and os.access(path, os.W_OK):
-                return os.path.join(path, filename)
+        if preserve_faces:
+            log_progress(f"Found {len(preserve_faces)} faces with UVs to preserve", 1)
+            
+            original_uvs = {}
+            bpy.ops.object.mode_set(mode='OBJECT')
+            uv_layer = obj.data.uv_layers.active
+            for poly in obj.data.polygons:
+                if poly.index in preserve_faces:
+                    original_uvs[poly.index] = [(uv_layer.data[loop_idx].uv.copy()) 
+                                              for loop_idx in poly.loop_indices]
+        
+        if len(obj.data.polygons) > len(preserve_faces):
+            log_progress("Unwrapping non-preserved faces...", 1)
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            for poly in obj.data.polygons:
+                poly.select = poly.index not in preserve_faces
                 
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        return os.path.join(desktop, filename)
-    
-    log_progress("Setting up bake parameters...", 1)
-    print_subheader("BAKING TEXTURES")
-    if preserve_faces:
-        log_progress("Starting preserved UV bake...", 1)
-        black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
-        bake_image_preserved.pixels.foreach_set(black_pixels)
+            bpy.ops.object.mode_set(mode='EDIT')
+            
+            if not unwrap_with_fallback(obj):
+                log_progress("UV unwrapping failed!", 1)
+                return
+                
+            log_progress("Non-preserved UV unwrap completed", 1)
+
+        if preserve_faces:
+            log_progress("Restoring preserved UVs...", 1)
+            bpy.ops.object.mode_set(mode='OBJECT')
+            for poly_idx, uv_data in original_uvs.items():
+                poly = obj.data.polygons[poly_idx]
+                for loop_idx, uv in zip(poly.loop_indices, uv_data):
+                    obj.data.uv_layers.active.data[loop_idx].uv = uv
+
+        def create_black_image(name, width, height):
+            img = bpy.data.images.new(name=name, width=width, height=height, alpha=True)
+            pixels = [0.0, 0.0, 0.0, 1.0] * (width * height)
+            img.pixels.foreach_set(pixels)
+            return img
+
+        safe_name = original_obj.name.replace('.', '_').lower()
+        bake_image_main = create_black_image(
+            name=f"{safe_name}_bake_main",
+            width=resolution, 
+            height=resolution
+        )
+        
+        bake_image_preserved = create_black_image(
+            name=f"{safe_name}_bake_preserved",
+            width=512, 
+            height=512
+        )
+
+        has_transparency = False
+        for material_slot in original_obj.material_slots:
+            if not material_slot.material:
+                continue
+                
+            material = material_slot.material
+            if material_has_transparency(material):
+                has_transparency = True
+            material.use_nodes = True
+            nodes = material.node_tree.nodes
+            links = material.node_tree.links
+            
+            for node in list(nodes):
+                if node.type == 'TEX_IMAGE' and node.image in [bake_image_main, bake_image_preserved]:
+                    nodes.remove(node)
+            
+            is_preserved = should_preserve_uv(original_obj, material)
+            target_image = bake_image_preserved if is_preserved else bake_image_main
+            bake_node = nodes.new('ShaderNodeTexImage')
+            bake_node.image = target_image
+            bake_node.select = True
+            nodes.active = bake_node
+            
+            principled = None
+            for node in nodes:
+                if node.type == 'BSDF_PRINCIPLED':
+                    principled = node
+                    break
+            
+            if not principled:
+                principled = nodes.new('ShaderNodeBsdfPrincipled')
+                
+            principled.inputs['Emission Strength'].default_value = 0.5
+
+        for obj in bpy.data.objects:
+            if obj.type == 'LIGHT':
+                bpy.data.objects.remove(obj, do_unlink=True)
+
+        lights = [
+            ('Top', (0, 0, -3.14159)),
+            ('Front', (1.5708, 0, 0)),
+            ('Left', (0, -1.5708, 0)),
+            ('Right', (0, 1.5708, 0)),
+            ('Back', (-1.5708, 0, 0))
+        ]
+
+        for name, rotation in lights:
+            light_data = bpy.data.lights.new(name=name, type='SUN')
+            light_data.energy = 5.0
+            light_data.angle = 180.0
+            light_object = bpy.data.objects.new(name=name, object_data=light_data)
+            bpy.context.scene.collection.objects.link(light_object)
+            light_object.rotation_euler = rotation
+
+        bpy.context.scene.world.use_nodes = True
+        world_nodes = bpy.context.scene.world.node_tree.nodes
+        world_nodes["Background"].inputs["Strength"].default_value = 2.0
+        world_nodes["Background"].inputs["Color"].default_value = (1, 1, 1, 1)
+
+        bpy.context.scene.cycles.diffuse_bounces = 2
+        bpy.context.scene.cycles.caustics_reflective = False
+        bpy.context.scene.cycles.caustics_refractive = False
+
+        cycles_prefs = bpy.context.preferences.addons['cycles'].preferences
+        cycles_prefs.compute_device_type = 'CUDA'
+        cycles_prefs.refresh_devices()
+        
+        for device_type in cycles_prefs.get_devices_for_type('CUDA'):
+            device_type.use = True
+        cycles_prefs.get_devices_for_type('CPU')[0].use = True
+        
+        bpy.context.scene.cycles.device = 'GPU'
+        bpy.context.scene.cycles.use_denoising = True
+        bpy.context.scene.cycles.preview_denoising = True
+        
+        bpy.context.scene.render.engine = 'CYCLES'
+        bpy.context.scene.cycles.samples = 512
+        bpy.context.scene.cycles.diffuse_bounces = 4
+        bpy.context.scene.render.bake.margin = 16
+        bpy.context.scene.render.bake.use_pass_direct = True
+        bpy.context.scene.render.bake.use_pass_indirect = True
+        bpy.context.scene.render.bake.use_selected_to_active = False
+        bpy.context.scene.render.bake.use_clear = True
+        bpy.context.scene.render.bake.target = 'IMAGE_TEXTURES'
+        
+        bpy.context.scene.render.bake.use_cage = True
+        bpy.context.scene.render.bake.cage_extrusion = 0.02
+        
+        bpy.context.scene.cycles.use_adaptive_sampling = False
+        bpy.context.scene.cycles.use_denoising = False
+        
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.uv.pack_islands(margin=0.02, rotate=False)
+        bpy.ops.uv.pin(clear=True)
+        bpy.ops.uv.average_islands_scale()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        if has_transparency:
+            bake_image_main.alpha_mode = 'NONE'
+            bake_image_preserved.alpha_mode = 'NONE'
+        
+        original_obj.select_set(True)
+        bpy.context.view_layer.objects.active = original_obj
+
+        def get_save_path(filename):
+            possible_paths = [
+                bpy.path.abspath("//"),
+                os.path.join(os.path.expanduser("~"), "Documents"),
+                tempfile.gettempdir(),
+                os.path.dirname(os.path.realpath(__file__))
+            ]
+            
+            for path in possible_paths:
+                if path and os.path.exists(path) and os.access(path, os.W_OK):
+                    return os.path.join(path, filename)
+                    
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+            return os.path.join(desktop, filename)
+        
+        log_progress("Setting up bake parameters...", 1)
+        print_subheader("BAKING TEXTURES")
+
+        if preserve_faces:
+            log_progress("Starting preserved UV bake...", 1)
+            black_pixels = [0.0, 0.0, 0.0, 1.0] * (512 * 512)
+            bake_image_preserved.pixels.foreach_set(black_pixels)
+
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            for poly in original_obj.data.polygons:
+                poly.select = poly.index in preserve_faces
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            log_progress("Beginning preserved bake operation...", 2)
+            bpy.ops.object.bake(type='DIFFUSE')
+            log_progress("Preserved bake completed", 2)
+
+        log_progress("Starting main texture bake...", 1)
+        black_pixels = [0.0, 0.0, 0.0, 1.0] * (resolution * resolution)
+        bake_image_main.pixels.foreach_set(black_pixels)
 
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.select_all(action='DESELECT')
         for poly in original_obj.data.polygons:
-            poly.select = poly.index in preserve_faces
+            poly.select = poly.index not in preserve_faces
         bpy.ops.object.mode_set(mode='OBJECT')
 
-        log_progress("Beginning preserved bake operation...", 2)
+        log_progress("Beginning main bake operation...", 2)
         bpy.ops.object.bake(type='DIFFUSE')
-        log_progress("Preserved bake completed", 2)
+        log_progress("Main bake completed", 2)
 
-    log_progress("Starting main texture bake...", 1)
-    black_pixels = [0.0, 0.0, 0.0, 1.0] * (1024 * 1024)
-    bake_image_main.pixels.foreach_set(black_pixels)
+        safe_name = original_obj.name.replace('.', '_').lower()
+        main_path = os.path.join(export_folder, f"{safe_name}_bake_main.png")
+        xmodel_path = os.path.join(export_folder, f"{safe_name}.xmodel_bin")
+        
+        try:
+            log_progress("Saving main texture...", 1)
+            bake_image_main.save_render(filepath=main_path)
+            log_progress(f"Main texture saved to: {main_path}", 1)
+            
+            parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(main_path))))
+            sub_folder = os.path.basename(os.path.dirname(os.path.dirname(main_path)))
+            curr_folder = os.path.basename(os.path.dirname(main_path))
+            
+            rel_texture = f"{parent_folder}\\{sub_folder}\\{curr_folder}\\{safe_name}_bake_main.png"
+            
+            gdt_builder.add_image(safe_name, rel_texture) 
+            gdt_builder.add_material(f"{safe_name}_m", safe_name)
+            
+        except Exception as e:
+            log_progress(f"Error saving main texture: {e}", 1)
 
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='DESELECT')
-    for poly in original_obj.data.polygons:
-        poly.select = poly.index not in preserve_faces
-    bpy.ops.object.mode_set(mode='OBJECT')
-
-    log_progress("Beginning main bake operation...", 2)
-    bpy.ops.object.bake(type='DIFFUSE')
-    log_progress("Main bake completed", 2)
-    
-    safe_name = original_obj.name.replace('.', '_').lower()
-    main_path = os.path.join(export_folder, f"{safe_name}_bake_main.png")
-    xmodel_path = os.path.join(export_folder, f"{safe_name}.xmodel_bin")
-    
-    try:
-        log_progress("Saving main texture...", 1)
-        bake_image_main.save_render(filepath=main_path)
-        log_progress(f"Main texture saved to: {main_path}", 1)
-        
-        parent_folder = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(main_path))))
-        sub_folder = os.path.basename(os.path.dirname(os.path.dirname(main_path)))
-        curr_folder = os.path.basename(os.path.dirname(main_path))
-        
-        rel_texture = f"{parent_folder}\\{sub_folder}\\{curr_folder}\\{safe_name}_bake_main.png"
-        
-        gdt_builder.add_image(safe_name, rel_texture) 
-        gdt_builder.add_material(f"{safe_name}_m", safe_name)
-        
-    except Exception as e:
-        log_progress(f"Error saving main texture: {e}", 1)
-
-    try:
-        if export_to_xmodel(xmodel_path, original_obj, create_extruded=True):
-            print(f"XMODEL_BIN files saved to: {xmodel_path}")
-        else:
-            print("Failed to export XMODEL_BIN files")
-    except Exception as e:
-        print(f"Error saving XMODEL_BIN files: {e}")
+        try:
+            if export_to_xmodel(xmodel_path, original_obj, create_extruded=True):
+                print(f"XMODEL_BIN files saved to: {xmodel_path}")
+            else:
+                print("Failed to export XMODEL_BIN files")
+        except Exception as e:
+            print(f"Error saving XMODEL_BIN files: {e}")
+    finally:
+        restore_mesh_visibility(hidden_states)
         
 def verify_and_split_if_needed(obj):
     MAX_SAFE_VERTICES = 12000
@@ -951,9 +996,9 @@ def transfer_original_data(new_obj, original_data):
     for i, poly in enumerate(new_obj.data.polygons):
         poly.material_index = mat_array[i] if i < len(mat_array) else 0
 
-def split_by_material_vertices(obj):
+def split_by_material_vertices(obj, resolution=512):  # Add resolution parameter here
     print_header("STARTING MATERIAL SPLIT (OPTIMIZED)")
-    MAX_VERTICES = 12000
+    MAX_VERTICES = 11000
     
     if not obj or obj.type != 'MESH':
         log_progress("Error: Please select a mesh object")
@@ -1048,9 +1093,26 @@ def split_by_material_vertices(obj):
     for i, new_obj in enumerate(new_objects, 1):
         print_header(f"PROCESSING CHUNK {i}/{total_chunks}: {new_obj.name}")
         
+        verify_and_split_if_needed(new_obj)
+        
         log_progress("Transferring materials...", 1)
         transfer_original_data(new_obj, original_data)
         
+        preserve_faces = set()
+        for poly in new_obj.data.polygons:
+            if poly.material_index < len(new_obj.material_slots):
+                mat = new_obj.material_slots[poly.material_index].material
+                if should_preserve_uv(new_obj, mat):
+                    preserve_faces.add(poly.index)
+                    
+        if preserve_faces:
+            log_progress(f"Found {len(preserve_faces)} faces to preserve in chunk {i}", 1)
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.mode_set(mode='OBJECT')
+            for poly in new_obj.data.polygons:
+                poly.select = poly.index not in preserve_faces
+                
         log_progress("Clearing previous bake data...", 1)
         for img in list(bpy.data.images):
             if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
@@ -1059,7 +1121,7 @@ def split_by_material_vertices(obj):
         
         log_progress("Starting bake process...", 1)
         bpy.context.view_layer.objects.active = new_obj
-        unwrap_and_bake_selected(new_obj, master_folder)
+        unwrap_and_bake_selected(new_obj, master_folder, resolution)  # Add resolution parameter here
         
         log_progress("Cleaning up...", 1)
         clear_bake_image_references(new_obj)
@@ -1088,7 +1150,7 @@ def clear_bake_image_references(obj):
                 if node.type == 'TEX_IMAGE' and node.image and any(suffix in node.image.name for suffix in ["_bake_main", "_bake_preserved"]):
                     node.image = None
 
-def split_and_bake():
+def split_and_bake(resolution=512):
     start_time = datetime.now()
     print_header("STARTING SPLIT AND BAKE OPERATION")
     obj = bpy.context.active_object
@@ -1096,78 +1158,115 @@ def split_and_bake():
     if not obj:
         log_progress("Error: No object selected")
         return
+    
+    initial_states = {o.name: (o.hide_viewport, o.hide_render) for o in bpy.context.scene.objects if o.type == 'MESH'}
         
-    log_progress("Applying modifiers...")
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    for mod in obj.modifiers:
-        try:
-            bpy.ops.object.modifier_apply(modifier=mod.name)
-        except:
-            print(f"Couldn't apply {mod.name}, removing instead")
-            obj.modifiers.remove(mod)
-    
-    obj_name, new_objects = split_by_material_vertices(obj)
-    
-    if obj_name is None:
-        print("No object selected or object is not a mesh.")
-        return
+    try:
+        log_progress("Applying modifiers...")
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        for mod in obj.modifiers:
+            try:
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+            except:
+                print(f"Couldn't apply {mod.name}, removing instead")
+                obj.modifiers.remove(mod)
         
-    master_folder_name = f"{obj_name}_baked"
-    master_folder = create_master_export_folder(master_folder_name)
-    
-    if not master_folder:
-        print("Could not create master export folder!")
-        return
-    
-    if new_objects:
-        for new_obj in new_objects:
-            mesh_data = new_obj.data
-            bpy.data.objects.remove(new_obj, do_unlink=True)
-            bpy.data.meshes.remove(mesh_data, do_unlink=True)
+        obj_name, new_objects = split_by_material_vertices(obj, resolution) 
+        
+        if obj_name is None:
+            print("No object selected or object is not a mesh.")
+            return
             
+        master_folder_name = f"{obj_name}_baked"
+        master_folder = create_master_export_folder(master_folder_name)
+        
+        if not master_folder:
+            print("Could not create master export folder!")
+            return
+        
+        if new_objects:
+            for new_obj in new_objects:
+                mesh_data = new_obj.data
+                bpy.data.objects.remove(new_obj, do_unlink=True)
+                bpy.data.meshes.remove(mesh_data, do_unlink=True)
+                
+            bpy.context.view_layer.update()
+        
+        print()
+        print("Checking for remaining mesh objects...")
+        remaining_meshes = [obj for obj in bpy.context.scene.objects 
+                           if obj.type == 'MESH' and obj.visible_get()]
+        
+        if remaining_meshes:
+            print(f"Found {len(remaining_meshes)} remaining mesh objects to process")
+            for i, rem_obj in enumerate(remaining_meshes):
+                print()
+                print(f"Processing remaining object {i+1} of {len(remaining_meshes)}: {rem_obj.name}")
+                
+                for img in list(bpy.data.images):
+                    if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
+                        img.user_clear()
+                        bpy.data.images.remove(img, do_unlink=True)
+                
+                bpy.context.view_layer.update()
+                
+                bpy.context.view_layer.objects.active = rem_obj
+                unwrap_and_bake_selected(rem_obj, master_folder, resolution)  # Pass resolution parameter here
+                
+                clear_bake_image_references(rem_obj)
+                for img in list(bpy.data.images):
+                    if img.name.startswith(f"{rem_obj.name}_bake"):
+                        img.user_clear()
+                        bpy.data.images.remove(img, do_unlink=True)
+                
+                mesh_data = rem_obj.data
+                bpy.data.objects.remove(rem_obj, do_unlink=True)
+                bpy.data.meshes.remove(mesh_data, do_unlink=True)
+                
+                bpy.context.view_layer.update()
+
+        if master_folder:
+            save_consolidated_gdt(master_folder, obj_name)
+            
+        for img in list(bpy.data.images):
+            if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
+                img.user_clear()
+                try:
+                    bpy.data.images.remove(img, do_unlink=True)
+                except:
+                    pass
+                    
         bpy.context.view_layer.update()
-    
-    print()
-    print("Checking for remaining mesh objects...")
-    remaining_meshes = [obj for obj in bpy.context.scene.objects 
-                       if obj.type == 'MESH' and obj.visible_get()]
-    
-    if remaining_meshes:
-        print(f"Found {len(remaining_meshes)} remaining mesh objects to process")
-        for i, rem_obj in enumerate(remaining_meshes):
-            print()
-            print(f"Processing remaining object {i+1} of {len(remaining_meshes)}: {rem_obj.name}")
-            
+        
+    except Exception as e:
+        print(f"Error during processing: {str(e)}")
+        raise
+    finally:
+        try:
+            for obj_name, (hide_viewport, hide_render) in initial_states.items():
+                try:
+                    obj = bpy.data.objects.get(obj_name)
+                    if obj and obj.name in bpy.data.objects:
+                        obj.hide_viewport = hide_viewport
+                        obj.hide_render = hide_render
+                except:
+                    continue
+                    
             for img in list(bpy.data.images):
                 if any(name in img.name for name in ['_bake_main', '_bake_preserved']):
-                    img.user_clear()
-                    bpy.data.images.remove(img, do_unlink=True)
-            
-            bpy.context.view_layer.update()
-            
-            bpy.context.view_layer.objects.active = rem_obj
-            unwrap_and_bake_selected(rem_obj, master_folder)
-            
-            clear_bake_image_references(rem_obj)
-            for img in list(bpy.data.images):
-                if img.name.startswith(f"{rem_obj.name}_bake"):
-                    img.user_clear()
-                    bpy.data.images.remove(img, do_unlink=True)
-            
-            mesh_data = rem_obj.data
-            bpy.data.objects.remove(rem_obj, do_unlink=True)
-            bpy.data.meshes.remove(mesh_data, do_unlink=True)
-            
-            bpy.context.view_layer.update()
-
-    if master_folder:
-        save_consolidated_gdt(master_folder, obj_name)
+                    try:
+                        img.user_clear()
+                        bpy.data.images.remove(img, do_unlink=True)
+                    except:
+                        continue
+        except:
+            pass
 
     print_header("OPERATION COMPLETED")
     end_time = datetime.now()
     elapsed = (end_time - start_time).total_seconds()
     print(f"Bake completed in {elapsed:.2f} seconds!")
 
-split_and_bake()
+split_and_bake(resolution=1024)
