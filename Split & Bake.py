@@ -94,21 +94,25 @@ class GDTBuilder:
             'image': image_name
         })
         
-    def add_model(self, name, rel_path, material_name):
+    def add_model(self, name, rel_path, material_name, material_prefix="rs_untextured"):
         rel_path = rel_path.replace('/', '\\\\').replace('\\', '\\\\')
+        sanitized_material = material_name.replace('.', '_')
+        material_override = f"{material_prefix} {sanitized_material}"
         self.models.append({
             'name': name,
             'path': rel_path,
-            'material': material_name
+            'material': material_override
         })
         
-    def add_submodel(self, parent_name, name, rel_path, material_name):
+    def add_submodel(self, parent_name, name, rel_path, material_name, material_prefix="rs_untextured"):
         rel_path = rel_path.replace('/', '\\\\').replace('\\', '\\\\')
+        sanitized_material = material_name.replace('.', '_')
+        material_override = f"{material_prefix} {sanitized_material}"
         self.submodels.append({
             'parent': parent_name,
             'name': name,
             'path': rel_path,
-            'material': material_name
+            'material': material_override
         })
         
     def build_gdt_content(self):
@@ -284,7 +288,7 @@ class GDTBuilder:
         "scale" "10.0"
         "scaleCollMap" "0"
         "ShadowLOD" "Auto"
-        "skinOverride" "rs_untextured {model['material']}\\r\\n"
+        "skinOverride" "{model['material']}\\r\\n"
         "type" "rigid"
         "usage_attachment" "0"
         "usage_hero" "0"
@@ -303,7 +307,7 @@ class GDTBuilder:
         "type" "animated"
         "usage_zombie_body" "1"
         "scale" "10.0"
-        "skinOverride" "rs_untextured {submodel['material']}\\r\\n"
+        "skinOverride" "{submodel['material']}\\r\\n"
     }}\n\n'''
 
 gdt_builder = GDTBuilder()
@@ -408,7 +412,12 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
             rel_path = f"..\\{parent_folder}\\{sub_folder}\\{curr_folder}"
             rel_xmodel = os.path.join("..", parent_folder, sub_folder, curr_folder, xmodel_filename).replace('/', '\\')
             
-            gdt_builder.add_model(safe_name, rel_xmodel, f"{safe_name}_m")
+            # Get the first material name from the object
+            material_name = "rs_untextured"
+            if len(obj.material_slots) > 0 and obj.material_slots[0].material:
+                material_name = obj.material_slots[0].material.name
+            
+            gdt_builder.add_model(safe_name, rel_xmodel, f"{safe_name}_m", material_name)
             
             if create_extruded:
                 log_progress("Creating flipped version...", 1)
@@ -432,7 +441,7 @@ def export_to_xmodel(filepath, obj, create_extruded=False):
                 if result == {'FINISHED'}:
                     log_progress("Flipped model exported successfully", 2)
                     rel_xmodel_extruded = os.path.join("..", parent_folder, sub_folder, curr_folder, extruded_filename).replace('/', '\\')
-                    gdt_builder.add_submodel(safe_name, f"{safe_name}_f", rel_xmodel_extruded, f"{safe_name}_m")
+                    gdt_builder.add_submodel(safe_name, f"{safe_name}_f", rel_xmodel_extruded, f"{safe_name}_m", material_name)
                 else:
                     log_progress("Failed to export extruded model", 2)
             
@@ -943,10 +952,20 @@ def verify_and_split_if_needed(obj):
 
 def store_original_data(obj):
     original_data = {
-        'materials': list(obj.material_slots),
+        'materials': [],
         'mesh': obj.data.copy(),
         'vert_dominant_mat': {}
     }
+
+    # Clean up material names and store materials
+    for slot in obj.material_slots:
+        if slot.material:
+            # Remove .001, .002, etc. from material names
+            if slot.material.name.rfind('.') > 0:
+                base_name = slot.material.name.rsplit('.', 1)[0]
+                if base_name.isalnum():  # Only rename if the base name is alphanumeric
+                    slot.material.name = base_name
+        original_data['materials'].append(slot)
 
     vert_mat_counts = {}
     for poly in obj.data.polygons:
@@ -1158,6 +1177,13 @@ def split_and_bake(resolution=512):
     if not obj:
         log_progress("Error: No object selected")
         return
+        
+    # Clean up material names in the original mesh
+    for mat_slot in obj.material_slots:
+        if mat_slot.material:
+            dot_index = mat_slot.material.name.find('.')
+            if dot_index > 0:  # Only if there's a dot and it's not the first character
+                mat_slot.material.name = mat_slot.material.name[:dot_index]
     
     initial_states = {o.name: (o.hide_viewport, o.hide_render) for o in bpy.context.scene.objects if o.type == 'MESH'}
         
@@ -1269,4 +1295,5 @@ def split_and_bake(resolution=512):
     elapsed = (end_time - start_time).total_seconds()
     print(f"Bake completed in {elapsed:.2f} seconds!")
 
-split_and_bake(resolution=1024)
+split_and_bake(resolution=512)
+
