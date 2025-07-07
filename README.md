@@ -17,7 +17,7 @@ This application takes GLTF files from [OSRS Enviroment Exporter](https://github
 4. save the blender file in: Bo3 Root/*New Folder*
 5. rename mesh to what you would like the models to be called
 6. select your mesh and run script
-7. After the script completes your models should be in APE (no noeed to place "_f" versions in your map they are linked as submodel)
+7. After the script completes your models should be in APE (no need to place "_f" versions in your map they are linked as submodel)
 
 
 
